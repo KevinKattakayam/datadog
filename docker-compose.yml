@@ -1,0 +1,262 @@
+# ============================================================
+#  Enterprise Observability Pipeline — Docker Compose
+#  Single-node local development stack
+# ============================================================
+
+services:
+  # ── Kafka (KRaft mode — no ZooKeeper) ──────────────────────
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: obs-kafka
+    hostname: kafka
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+      - "29092:29092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_SEGMENT_BYTES: 1073741824
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks:
+      - observability-net
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  # ── Kafka Topic Initializer ────────────────────────────────
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: obs-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command: |
+      "
+      echo 'Creating Kafka topics...'
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic metrics.raw --partitions 6 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic metrics.processed --partitions 6 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic alerts.fired --partitions 3 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic metrics.dlq --partitions 3 --replication-factor 1 --config retention.ms=604800000
+      echo 'Topics created successfully.'
+      kafka-topics --bootstrap-server kafka:9092 --list
+      "
+    networks:
+      - observability-net
+
+  # ── Kafka Exporter (Prometheus metrics for Kafka) ──────────
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:latest
+    container_name: obs-kafka-exporter
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command:
+      - --kafka.server=kafka:9092
+    ports:
+      - "9308:9308"
+    networks:
+      - observability-net
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  # ── ClickHouse (columnar long-term storage) ────────────────
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3-alpine
+    container_name: obs-clickhouse
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./infra/clickhouse/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./infra/clickhouse/init.sh:/docker-entrypoint-initdb.d/00-init.sh:ro
+    environment:
+      CLICKHOUSE_DB: observability
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    networks:
+      - observability-net
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  # ── Prometheus (time-series database + scraper) ────────────
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: obs-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/prometheus/alerts/:/etc/prometheus/alerts/:ro
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+      - --web.enable-admin-api
+    networks:
+      - observability-net
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # ── AlertManager ───────────────────────────────────────────
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: obs-alertmanager
+    ports:
+      - "9094:9093"
+    volumes:
+      - ./infra/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    networks:
+      - observability-net
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  # ── Grafana (visualization + alerting UI) ──────────────────
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: obs-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/pipeline.json
+      GF_INSTALL_PLUGINS: grafana-clickhouse-datasource
+    volumes:
+      - ./infra/grafana/provisioning/:/etc/grafana/provisioning/:ro
+      - ./infra/grafana/dashboards/:/var/lib/grafana/dashboards/:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    networks:
+      - observability-net
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  # ── Go Ingestor ────────────────────────────────────────────
+  ingestor:
+    build:
+      context: ./ingestor
+      dockerfile: Dockerfile
+    container_name: obs-ingestor
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC_RAW: metrics.raw
+      INGESTOR_PORT: "8080"
+      INGESTOR_LOG_LEVEL: info
+      INGESTOR_BATCH_SIZE: "500"
+      INGESTOR_FLUSH_INTERVAL_MS: "100"
+      INGESTOR_RATE_LIMIT_RPS: "10000"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - observability-net
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  # ── Rust Processor ─────────────────────────────────────────
+  processor:
+    build:
+      context: ./processor
+      dockerfile: Dockerfile
+    container_name: obs-processor
+    ports:
+      - "9091:9091"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC_RAW: metrics.raw
+      KAFKA_TOPIC_PROCESSED: metrics.processed
+      KAFKA_TOPIC_ALERTS: alerts.fired
+      KAFKA_TOPIC_DLQ: metrics.dlq
+      KAFKA_CONSUMER_GROUP: processor-group
+      CLICKHOUSE_URL: http://clickhouse:8123/observability
+      PROCESSOR_METRICS_PORT: "9091"
+      PROCESSOR_BATCH_SIZE: "1000"
+      PROCESSOR_FLUSH_INTERVAL_MS: "500"
+      PROCESSOR_EWMA_ALPHA: "0.3"
+      PROCESSOR_ZSCORE_WINDOW: "300"
+      PROCESSOR_ANOMALY_THRESHOLD: "3.0"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    networks:
+      - observability-net
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+volumes:
+  kafka-data:
+  clickhouse-data:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  observability-net:
+    driver: bridge

@@ -1,0 +1,56 @@
+# ============================================================
+#  AlertManager Configuration
+# ============================================================
+
+global:
+  resolve_timeout: 5m
+
+route:
+  group_by: ["alertname", "service"]
+  group_wait: 10s
+  group_interval: 10s
+  repeat_interval: 1h
+  receiver: default
+
+  routes:
+    # Critical alerts — short repeat interval
+    - match:
+        severity: critical
+      receiver: critical-slack
+      repeat_interval: 5m
+
+    # SLO burn rate alerts
+    - match:
+        slo: ingestor-availability
+      receiver: slo-slack
+      repeat_interval: 30m
+
+receivers:
+  - name: default
+    webhook_configs:
+      - url: "http://localhost:9095/webhook"
+        send_resolved: true
+
+  - name: critical-slack
+    slack_configs:
+      - api_url: "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
+        channel: "#observability-alerts"
+        title: '{{ .CommonAnnotations.summary }}'
+        text: '{{ .CommonAnnotations.description }}'
+        send_resolved: true
+
+  - name: slo-slack
+    slack_configs:
+      - api_url: "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
+        channel: "#slo-alerts"
+        title: 'SLO Alert: {{ .CommonAnnotations.summary }}'
+        text: '{{ .CommonAnnotations.description }}'
+        send_resolved: true
+
+# Inhibition rules — suppress lower-severity alerts when critical fires
+inhibit_rules:
+  - source_match:
+      severity: critical
+    target_match:
+      severity: warning
+    equal: ["service"]

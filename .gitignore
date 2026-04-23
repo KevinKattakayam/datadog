@@ -1,0 +1,50 @@
+# Go
+ingestor/ingestor
+ingestor/server
+*.exe
+*.test
+*.out
+vendor/
+
+# Rust
+processor/target/
+**/*.rs.bk
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+*.env.local
+
+# Docker
+docker-compose.override.yml
+
+# Data volumes
+data/
+volumes/
+
+# Build artifacts
+bin/
+dist/
+
+# Test coverage
+coverage.out
+coverage.html
+*.prof
+
+# Logs
+*.log
+logs/
+
+# Temporary
+tmp/
+temp/

@@ -1,0 +1,98 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: processor
+  namespace: observability
+  labels:
+    app: processor
+    component: pipeline
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: processor
+  template:
+    metadata:
+      labels:
+        app: processor
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9091"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: processor
+          image: observability-pipeline/processor:latest
+          ports:
+            - containerPort: 9091
+              name: metrics
+          env:
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: "kafka-0.kafka-headless.observability.svc.cluster.local:9092,kafka-1.kafka-headless.observability.svc.cluster.local:9092,kafka-2.kafka-headless.observability.svc.cluster.local:9092"
+            - name: KAFKA_TOPIC_RAW
+              value: "metrics.raw"
+            - name: KAFKA_TOPIC_PROCESSED
+              value: "metrics.processed"
+            - name: KAFKA_TOPIC_ALERTS
+              value: "alerts.fired"
+            - name: KAFKA_CONSUMER_GROUP
+              value: "processor-group"
+            - name: CLICKHOUSE_URL
+              value: "http://clickhouse.observability.svc.cluster.local:8123/observability"
+            - name: PROCESSOR_METRICS_PORT
+              value: "9091"
+            - name: PROCESSOR_BATCH_SIZE
+              value: "1000"
+            - name: PROCESSOR_EWMA_ALPHA
+              value: "0.3"
+            - name: PROCESSOR_ANOMALY_THRESHOLD
+              value: "3.0"
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 9091
+            initialDelaySeconds: 10
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: processor
+  namespace: observability
+  labels:
+    app: processor
+spec:
+  selector:
+    app: processor
+  ports:
+    - name: metrics
+      port: 9091
+      targetPort: 9091
+  type: ClusterIP
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: processor-hpa
+  namespace: observability
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: processor
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

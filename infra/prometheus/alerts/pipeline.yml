@@ -1,0 +1,108 @@
+# ============================================================
+#  Pipeline Alert Rules
+# ============================================================
+
+groups:
+  - name: pipeline.ingestor
+    rules:
+      # High error rate on the ingestor
+      - alert: IngestorHighErrorRate
+        expr: |
+          (
+            sum(rate(ingestor_requests_total{status_code=~"5.."}[5m]))
+            /
+            sum(rate(ingestor_requests_total[5m]))
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          service: ingestor
+        annotations:
+          summary: "Ingestor error rate above 5%"
+          description: "The Go ingestor is returning >5% server errors over the last 5 minutes. Current rate: {{ $value | humanizePercentage }}"
+
+      # Ingestor is down
+      - alert: IngestorDown
+        expr: up{job="go-ingestor"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: ingestor
+        annotations:
+          summary: "Go Ingestor is DOWN"
+          description: "The Go Ingestor has been unreachable for over 1 minute."
+
+      # High publish latency to Kafka
+      - alert: IngestorPublishLatencyHigh
+        expr: histogram_quantile(0.99, rate(ingestor_kafka_publish_duration_seconds_bucket[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          service: ingestor
+        annotations:
+          summary: "Ingestor p99 Kafka publish latency > 100ms"
+          description: "p99 publish latency: {{ $value | humanizeDuration }}"
+
+  - name: pipeline.processor
+    rules:
+      # Processor is down
+      - alert: ProcessorDown
+        expr: up{job="rust-processor"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: processor
+        annotations:
+          summary: "Rust Processor is DOWN"
+          description: "The Rust Processor has been unreachable for over 1 minute."
+
+      # High anomaly detection rate (possible data quality issue)
+      - alert: AnomalyRateSpike
+        expr: |
+          (
+            sum(rate(processor_anomalies_detected_total[5m]))
+            /
+            sum(rate(processor_messages_consumed_total[5m]))
+          ) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          service: processor
+        annotations:
+          summary: "Anomaly detection rate > 10%"
+          description: "More than 10% of metrics are being flagged as anomalies. This may indicate a data quality issue or a genuine incident."
+
+      # ClickHouse write latency too high
+      - alert: ClickHouseWriteLatencyHigh
+        expr: histogram_quantile(0.99, rate(processor_clickhouse_write_duration_seconds_bucket[5m])) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          service: processor
+        annotations:
+          summary: "ClickHouse p99 write latency > 500ms"
+          description: "p99 ClickHouse write latency: {{ $value | humanizeDuration }}"
+
+  - name: pipeline.kafka
+    rules:
+      # Consumer group lag is too high
+      - alert: KafkaConsumerLagHigh
+        expr: kafka_consumergroup_lag_sum > 10000
+        for: 2m
+        labels:
+          severity: warning
+          service: kafka
+        annotations:
+          summary: "Kafka consumer lag > 10,000"
+          description: "Consumer group lag for topic {{ $labels.topic }}: {{ $value }}. The processor may be falling behind."
+
+      # Kafka broker is down
+      - alert: KafkaBrokerDown
+        expr: kafka_brokers < 1
+        for: 1m
+        labels:
+          severity: critical
+          service: kafka
+        annotations:
+          summary: "Kafka broker is DOWN"
+          description: "No Kafka brokers are reachable."

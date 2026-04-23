@@ -1,0 +1,189 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    { "title": "Pipeline Dashboard", "url": "/d/obs-pipeline-main", "type": "link" },
+    { "title": "SLO Dashboard", "url": "/d/obs-slo-dashboard", "type": "link" },
+    { "title": "Jaeger UI", "url": "http://localhost:16686", "type": "link", "targetBlank": true }
+  ],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 300,
+      "title": "Trace Overview",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "short",
+          "thresholds": { "steps": [{ "color": "green", "value": null }] }
+        }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 1 },
+      "id": 301,
+      "title": "Total Spans (1h)",
+      "type": "stat",
+      "targets": [{ "expr": "sum(increase(tempo_distributor_spans_received_total[1h]))", "legendFormat": "Spans" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "ops",
+          "thresholds": { "steps": [{ "color": "green", "value": null }] }
+        }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 1 },
+      "id": 302,
+      "title": "Spans/sec",
+      "type": "stat",
+      "targets": [{ "expr": "sum(rate(tempo_distributor_spans_received_total[5m]))", "legendFormat": "Rate" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "short",
+          "thresholds": { "steps": [{ "color": "green", "value": null }] }
+        }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 1 },
+      "id": 303,
+      "title": "Active Traces",
+      "type": "stat",
+      "targets": [{ "expr": "tempo_ingester_traces_created_total - tempo_ingester_traces_completed_total", "legendFormat": "Active" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "bytes",
+          "thresholds": { "steps": [{ "color": "green", "value": null }] }
+        }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
+      "id": 304,
+      "title": "Tempo Storage Size",
+      "type": "stat",
+      "targets": [{ "expr": "tempo_ingester_bytes_received_total", "legendFormat": "Bytes" }]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "id": 310,
+      "title": "Trace Throughput",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "ops" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "id": 311,
+      "title": "Span Ingestion Rate (by service)",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "sum(rate(tempo_distributor_spans_received_total[5m])) by (service)", "legendFormat": "{{ service }}" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "s" } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "id": 312,
+      "title": "Span Duration Percentiles",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(tempo_distributor_ingester_append_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, sum(rate(tempo_distributor_ingester_append_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p95" },
+        { "expr": "histogram_quantile(0.99, sum(rate(tempo_distributor_ingester_append_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p99" }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 },
+      "id": 320,
+      "title": "Service Map & Trace Search",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "tempo", "uid": "tempo" },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 15 },
+      "id": 321,
+      "title": "Trace Search",
+      "type": "traces",
+      "targets": [{ "queryType": "nativeSearch", "limit": 20 }]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 25 },
+      "id": 330,
+      "title": "OTEL Collector Health",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short" } },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 26 },
+      "id": 331,
+      "title": "OTEL Collector — Exported Spans",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "sum(rate(otelcol_exporter_sent_spans_total[5m])) by (exporter)", "legendFormat": "{{ exporter }}" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short" } },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 26 },
+      "id": 332,
+      "title": "OTEL Collector — Received Spans",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "sum(rate(otelcol_receiver_accepted_spans_total[5m])) by (receiver)", "legendFormat": "{{ receiver }}" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short" } },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 26 },
+      "id": 333,
+      "title": "OTEL Collector — Dropped Spans",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "sum(rate(otelcol_exporter_send_failed_spans_total[5m])) by (exporter)", "legendFormat": "{{ exporter }} (dropped)" }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["tracing", "tempo", "opentelemetry", "jaeger"],
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": false, "text": "Prometheus", "value": "Prometheus" },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Data Source",
+        "multi": false,
+        "name": "datasource",
+        "query": "prometheus",
+        "type": "datasource"
+      }
+    ]
+  },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Distributed Tracing — Tempo + OTEL",
+  "uid": "obs-tracing-dashboard",
+  "version": 1
+}

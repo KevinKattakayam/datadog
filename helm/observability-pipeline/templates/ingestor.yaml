@@ -1,0 +1,155 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "obs.fullname" . }}-ingestor
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: ingestor
+    {{- include "obs.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.ingestor.replicaCount }}
+  selector:
+    matchLabels:
+      app: ingestor
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 2
+  template:
+    metadata:
+      labels:
+        app: ingestor
+        {{- include "obs.labels" . | nindent 8 }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "{{ .Values.ingestor.service.httpPort }}"
+        prometheus.io/path: "/metrics"
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: ingestor
+          image: "{{ .Values.global.imageRegistry }}{{ .Values.ingestor.image.repository }}:{{ .Values.ingestor.image.tag }}"
+          imagePullPolicy: {{ .Values.ingestor.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.ingestor.service.httpPort }}
+              protocol: TCP
+            - name: grpc
+              containerPort: {{ .Values.ingestor.service.grpcPort }}
+              protocol: TCP
+          env:
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: {{ .Values.ingestor.config.kafkaBootstrapServers | quote }}
+            - name: KAFKA_TOPIC_RAW
+              value: {{ .Values.ingestor.config.kafkaTopicRaw | quote }}
+            - name: INGESTOR_PORT
+              value: {{ .Values.ingestor.service.httpPort | quote }}
+            - name: INGESTOR_GRPC_PORT
+              value: {{ .Values.ingestor.service.grpcPort | quote }}
+            - name: INGESTOR_BATCH_SIZE
+              value: {{ .Values.ingestor.config.batchSize | quote }}
+            - name: INGESTOR_FLUSH_INTERVAL_MS
+              value: {{ .Values.ingestor.config.flushIntervalMs | quote }}
+            - name: INGESTOR_RATE_LIMIT_RPS
+              value: {{ .Values.ingestor.config.rateLimitRPS | quote }}
+            - name: INGESTOR_LOG_LEVEL
+              value: {{ .Values.ingestor.config.logLevel | quote }}
+            - name: REDIS_URL
+              value: {{ .Values.ingestor.config.redisUrl | quote }}
+            - name: SCHEMA_REGISTRY_URL
+              value: {{ .Values.ingestor.config.schemaRegistryUrl | quote }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.ingestor.config.otelEndpoint | quote }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.ingestor.probes.liveness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.ingestor.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.ingestor.probes.liveness.periodSeconds }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.ingestor.probes.readiness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.ingestor.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.ingestor.probes.readiness.periodSeconds }}
+          resources:
+            {{- toYaml .Values.ingestor.resources | nindent 12 }}
+      {{- with .Values.ingestor.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.ingestor.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.ingestor.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "obs.fullname" . }}-ingestor
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: ingestor
+    {{- include "obs.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.ingestor.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.ingestor.service.httpPort }}
+      targetPort: http
+      protocol: TCP
+    - name: grpc
+      port: {{ .Values.ingestor.service.grpcPort }}
+      targetPort: grpc
+      protocol: TCP
+  selector:
+    app: ingestor
+---
+{{- if .Values.ingestor.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "obs.fullname" . }}-ingestor
+  namespace: {{ .Values.global.namespace }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "obs.fullname" . }}-ingestor
+  minReplicas: {{ .Values.ingestor.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.ingestor.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.ingestor.autoscaling.targetCPUUtilization }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.ingestor.autoscaling.targetMemoryUtilization }}
+{{- end }}
+---
+{{- if .Values.ingestor.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "obs.fullname" . }}-ingestor
+  namespace: {{ .Values.global.namespace }}
+spec:
+  minAvailable: {{ .Values.ingestor.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      app: ingestor
+{{- end }}

@@ -1,0 +1,99 @@
+# OpenTelemetry Collector Configuration
+# Routes telemetry: traces → Tempo + Jaeger, metrics → Prometheus
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+  # Scrape Prometheus metrics from services
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: otel-collector
+          scrape_interval: 10s
+          static_configs:
+            - targets: ["localhost:8888"]
+
+  # Receive Kafka messages as telemetry
+  kafka:
+    brokers:
+      - kafka:9092
+    topic: otlp-spans
+    encoding: otlp_proto
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+    send_batch_max_size: 2048
+
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: 200
+    spike_limit_mib: 50
+
+  attributes:
+    actions:
+      - key: environment
+        value: production
+        action: upsert
+      - key: pipeline.component
+        value: otel-collector
+        action: upsert
+
+  resource:
+    attributes:
+      - key: service.namespace
+        value: observability-pipeline
+        action: upsert
+
+exporters:
+  # Traces → Grafana Tempo
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+
+  # Traces → Jaeger
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
+  # Metrics → Prometheus
+  prometheusremotewrite:
+    endpoint: http://prometheus:9090/api/v1/write
+    tls:
+      insecure: true
+
+  # Self-monitoring metrics
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    namespace: otel_collector
+
+  # Debug logging
+  debug:
+    verbosity: basic
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+  zpages:
+    endpoint: 0.0.0.0:55679
+
+service:
+  extensions: [health_check, zpages]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, attributes, resource]
+      exporters: [otlp/tempo, otlp/jaeger]
+
+    metrics:
+      receivers: [otlp, prometheus]
+      processors: [memory_limiter, batch]
+      exporters: [prometheusremotewrite, prometheus]

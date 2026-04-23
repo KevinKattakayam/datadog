@@ -1,0 +1,85 @@
+syntax = "proto3";
+
+package observability.v1;
+
+option go_package = "github.com/Kevinbastin/observability-pipeline/ingestor/proto/v1";
+
+// MetricService provides high-performance binary metric ingestion.
+// Use this endpoint when SDK clients need lower overhead than HTTP/JSON.
+service MetricService {
+  // IngestMetric sends a single metric data point.
+  rpc IngestMetric(IngestMetricRequest) returns (IngestMetricResponse);
+
+  // IngestMetricBatch sends a batch of metric data points.
+  rpc IngestMetricBatch(IngestMetricBatchRequest) returns (IngestMetricBatchResponse);
+
+  // StreamMetrics opens a bidirectional stream for continuous metric ingestion.
+  rpc StreamMetrics(stream IngestMetricRequest) returns (stream IngestMetricResponse);
+
+  // HealthCheck returns the service health status.
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+// Metric represents a single data point in the observability pipeline.
+message Metric {
+  // Dot-separated metric name (e.g., "api.request.duration_ms")
+  string name = 1;
+
+  // Numeric metric value
+  double value = 2;
+
+  // Unit of measurement (ms, bytes, count, percent)
+  string unit = 3;
+
+  // Key-value metadata tags
+  map<string, string> tags = 4;
+
+  // Unix epoch timestamp in seconds
+  int64 timestamp = 5;
+
+  // Originating hostname
+  string host = 6;
+
+  // W3C trace ID for distributed tracing correlation
+  string trace_id = 7;
+}
+
+// IngestMetricRequest wraps a single metric for ingestion.
+message IngestMetricRequest {
+  Metric metric = 1;
+}
+
+// IngestMetricResponse confirms single metric acceptance.
+message IngestMetricResponse {
+  string status = 1;     // "accepted" or "rejected"
+  string message = 2;    // Error details if rejected
+  string trace_id = 3;   // Trace ID for correlation
+}
+
+// IngestMetricBatchRequest wraps a batch of metrics.
+message IngestMetricBatchRequest {
+  repeated Metric metrics = 1;
+}
+
+// IngestMetricBatchResponse confirms batch acceptance.
+message IngestMetricBatchResponse {
+  string status = 1;     // "accepted" or "partial"
+  int32 accepted = 2;    // Number of metrics accepted
+  int32 rejected = 3;    // Number of metrics rejected
+  repeated string errors = 4;  // Rejection reasons
+}
+
+// HealthCheckRequest is empty — just pings the service.
+message HealthCheckRequest {}
+
+// HealthCheckResponse returns service status.
+message HealthCheckResponse {
+  enum ServingStatus {
+    UNKNOWN = 0;
+    SERVING = 1;
+    NOT_SERVING = 2;
+  }
+  ServingStatus status = 1;
+  string version = 2;
+  map<string, string> components = 3;
+}

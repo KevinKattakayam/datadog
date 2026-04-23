@@ -1,0 +1,298 @@
+# ============================================================
+#  Helm Values — Enterprise Observability Pipeline
+#  Override these values for different environments
+# ============================================================
+
+global:
+  namespace: observability
+  environment: production
+  imageRegistry: ""
+  imagePullSecrets: []
+
+# ── Go Ingestor ──────────────────────────────────────────────
+ingestor:
+  replicaCount: 3
+  image:
+    repository: observability-pipeline/ingestor
+    tag: "1.0.0"
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    httpPort: 8080
+    grpcPort: 50051
+    metricsPort: 8080
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 20
+    targetCPUUtilization: 70
+    targetMemoryUtilization: 80
+  config:
+    kafkaBootstrapServers: kafka:9092
+    kafkaTopicRaw: metrics.raw
+    batchSize: 500
+    flushIntervalMs: 100
+    rateLimitRPS: 10000
+    logLevel: info
+    redisUrl: redis-master:6379
+    schemaRegistryUrl: http://schema-registry:8081
+    otelEndpoint: http://otel-collector:4317
+  probes:
+    liveness:
+      path: /health
+      initialDelaySeconds: 10
+      periodSeconds: 15
+    readiness:
+      path: /ready
+      initialDelaySeconds: 5
+      periodSeconds: 10
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
+  nodeSelector: {}
+  tolerations: []
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: app
+                  operator: In
+                  values: [ingestor]
+            topologyKey: kubernetes.io/hostname
+
+# ── Rust Processor ───────────────────────────────────────────
+processor:
+  replicaCount: 3
+  image:
+    repository: observability-pipeline/processor
+    tag: "1.0.0"
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    metricsPort: 9091
+  resources:
+    requests:
+      cpu: 500m
+      memory: 256Mi
+    limits:
+      cpu: "2"
+      memory: 512Mi
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 12
+    targetCPUUtilization: 60
+  config:
+    kafkaBootstrapServers: kafka:9092
+    kafkaTopicRaw: metrics.raw
+    kafkaTopicProcessed: metrics.processed
+    kafkaTopicAlerts: alerts.fired
+    kafkaTopicDlq: metrics.dlq
+    consumerGroup: processor-group
+    clickhouseUrl: http://clickhouse:8123/observability
+    batchSize: 1000
+    flushIntervalMs: 500
+    ewmaAlpha: "0.3"
+    zscoreWindow: "300"
+    anomalyThreshold: "3.0"
+    otelEndpoint: http://otel-collector:4317
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
+
+# ── Kafka (Bitnami subchart) ────────────────────────────────
+kafka:
+  enabled: true
+  replicaCount: 3
+  kraft:
+    enabled: true
+  listeners:
+    client:
+      protocol: PLAINTEXT
+    interbroker:
+      protocol: PLAINTEXT
+  persistence:
+    enabled: true
+    size: 50Gi
+    storageClass: gp3
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  metrics:
+    kafka:
+      enabled: true
+    jmx:
+      enabled: true
+
+# ── ClickHouse ───────────────────────────────────────────────
+clickhouse:
+  enabled: true
+  replicaCount: 2
+  shards: 1
+  persistence:
+    enabled: true
+    size: 100Gi
+    storageClass: gp3
+  resources:
+    requests:
+      cpu: "1"
+      memory: 2Gi
+    limits:
+      cpu: "4"
+      memory: 4Gi
+
+# ── Redis (Bitnami subchart) ────────────────────────────────
+redis:
+  enabled: true
+  architecture: standalone
+  auth:
+    enabled: false
+  master:
+    persistence:
+      enabled: true
+      size: 5Gi
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+
+# ── Prometheus ───────────────────────────────────────────────
+prometheus:
+  enabled: true
+  image:
+    repository: prom/prometheus
+    tag: v2.51.0
+  retention: 15d
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  persistence:
+    enabled: true
+    size: 50Gi
+    storageClass: gp3
+
+# ── Grafana ──────────────────────────────────────────────────
+grafana:
+  enabled: true
+  image:
+    repository: grafana/grafana
+    tag: "10.4.0"
+  adminUser: admin
+  adminPassword: admin
+  plugins:
+    - grafana-clickhouse-datasource
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  persistence:
+    enabled: true
+    size: 5Gi
+
+# ── Grafana Tempo ────────────────────────────────────────────
+tempo:
+  enabled: true
+  image:
+    repository: grafana/tempo
+    tag: "2.4.1"
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+  persistence:
+    enabled: true
+    size: 20Gi
+
+# ── Jaeger ───────────────────────────────────────────────────
+jaeger:
+  enabled: true
+  image:
+    repository: jaegertracing/all-in-one
+    tag: "1.55"
+  storage:
+    type: memory
+    maxTraces: 50000
+
+# ── Schema Registry ─────────────────────────────────────────
+schemaRegistry:
+  enabled: true
+  image:
+    repository: confluentinc/cp-schema-registry
+    tag: "7.6.0"
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# ── OpenTelemetry Collector ──────────────────────────────────
+otelCollector:
+  enabled: true
+  image:
+    repository: otel/opentelemetry-collector-contrib
+    tag: "0.96.0"
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+# ── AlertManager ─────────────────────────────────────────────
+alertmanager:
+  enabled: true
+  slackWebhookUrl: ""
+  pagerdutyRoutingKey: ""
+
+# ── Kafka Connect ───────────────────────────────────────────
+kafkaConnect:
+  enabled: true
+  image:
+    repository: confluentinc/cp-kafka-connect
+    tag: "7.6.0"
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+# ── Network Policies ────────────────────────────────────────
+networkPolicies:
+  enabled: true
+
+# ── Service Monitor (Prometheus Operator) ────────────────────
+serviceMonitor:
+  enabled: false
+  interval: 10s

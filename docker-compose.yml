@@ -195,14 +195,19 @@ services:
     container_name: obs-ingestor
     ports:
       - "8080:8080"
+      - "50051:50051"
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       KAFKA_TOPIC_RAW: metrics.raw
       INGESTOR_PORT: "8080"
+      INGESTOR_GRPC_PORT: "50051"
       INGESTOR_LOG_LEVEL: info
       INGESTOR_BATCH_SIZE: "500"
       INGESTOR_FLUSH_INTERVAL_MS: "100"
       INGESTOR_RATE_LIMIT_RPS: "10000"
+      REDIS_URL: redis:6379
+      SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
     depends_on:
       kafka:
         condition: service_healthy
@@ -240,6 +245,7 @@ services:
       PROCESSOR_EWMA_ALPHA: "0.3"
       PROCESSOR_ZSCORE_WINDOW: "300"
       PROCESSOR_ANOMALY_THRESHOLD: "3.0"
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
     depends_on:
       kafka:
         condition: service_healthy
@@ -252,12 +258,169 @@ services:
         limits:
           memory: 256M
 
+  # ── Grafana Tempo (distributed tracing backend) ─────────────
+  tempo:
+    image: grafana/tempo:2.4.1
+    container_name: obs-tempo
+    command: ["-config.file=/etc/tempo/tempo.yml"]
+    volumes:
+      - ./infra/tempo/tempo.yml:/etc/tempo/tempo.yml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "3200:3200"
+      - "4317:4317"
+      - "4318:4318"
+    networks:
+      - observability-net
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # ── Jaeger (trace visualization UI) ─────────────────────────
+  jaeger:
+    image: jaegertracing/all-in-one:1.55
+    container_name: obs-jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+      SPAN_STORAGE_TYPE: memory
+      MEMORY_MAX_TRACES: "50000"
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    networks:
+      - observability-net
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # ── Redis (metric caching layer) ────────────────────────────
+  redis:
+    image: redis:7.2-alpine
+    container_name: obs-redis
+    command: >
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+      --appendfsync everysec
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - observability-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  # ── Confluent Schema Registry (Avro validation) ─────────────
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.6.0
+    container_name: obs-schema-registry
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:9092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+      SCHEMA_REGISTRY_SCHEMA_COMPATIBILITY_LEVEL: BACKWARD
+    networks:
+      - observability-net
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # ── Schema Registry Initializer ─────────────────────────────
+  schema-init:
+    image: confluentinc/cp-schema-registry:7.6.0
+    container_name: obs-schema-init
+    depends_on:
+      - schema-registry
+    volumes:
+      - ./infra/schema-registry/schemas/:/etc/schema-registry/schemas/:ro
+      - ./infra/schema-registry/register-schemas.sh:/register-schemas.sh:ro
+    entrypoint: ["/bin/bash", "/register-schemas.sh"]
+    environment:
+      SCHEMA_REGISTRY_URL: http://schema-registry:8081
+    networks:
+      - observability-net
+
+  # ── Kafka Connect (sink connectors) ─────────────────────────
+  kafka-connect:
+    image: confluentinc/cp-kafka-connect:7.6.0
+    container_name: obs-kafka-connect
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8083:8083"
+    environment:
+      CONNECT_BOOTSTRAP_SERVERS: kafka:9092
+      CONNECT_REST_ADVERTISED_HOST_NAME: kafka-connect
+      CONNECT_REST_PORT: 8083
+      CONNECT_GROUP_ID: obs-connect-group
+      CONNECT_CONFIG_STORAGE_TOPIC: _connect-configs
+      CONNECT_OFFSET_STORAGE_TOPIC: _connect-offsets
+      CONNECT_STATUS_STORAGE_TOPIC: _connect-status
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_KEY_CONVERTER: org.apache.kafka.connect.storage.StringConverter
+      CONNECT_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+      CONNECT_PLUGIN_PATH: /usr/share/java,/usr/share/confluent-hub-components
+    volumes:
+      - ./infra/kafka-connect/:/etc/kafka-connect/:ro
+    networks:
+      - observability-net
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  # ── OpenTelemetry Collector ─────────────────────────────────
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.96.0
+    container_name: obs-otel-collector
+    command: ["--config=/etc/otel/config.yml"]
+    volumes:
+      - ./infra/otel-collector/config.yml:/etc/otel/config.yml:ro
+    ports:
+      - "4319:4317"
+      - "4320:4318"
+      - "8888:8888"
+      - "8889:8889"
+    depends_on:
+      - tempo
+      - jaeger
+    networks:
+      - observability-net
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
 volumes:
   kafka-data:
   clickhouse-data:
   prometheus-data:
   grafana-data:
+  tempo-data:
+  redis-data:
 
 networks:
   observability-net:
     driver: bridge
+

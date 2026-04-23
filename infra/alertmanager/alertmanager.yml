@@ -1,56 +1,149 @@
 # ============================================================
-#  AlertManager Configuration
+#  AlertManager Configuration — Production Grade
+#  Routes: Critical → PagerDuty, Warning → Slack, Info → Email
 # ============================================================
 
 global:
   resolve_timeout: 5m
+  # Slack webhook configuration
+  slack_api_url: 'https://hooks.slack.com/services/YOUR_WORKSPACE/YOUR_CHANNEL/YOUR_TOKEN'
 
+# ── Notification Templates ────────────────────────────────────
+templates:
+  - '/etc/alertmanager/templates/*.tmpl'
+
+# ── Alert Routing Tree ────────────────────────────────────────
 route:
-  group_by: ["alertname", "service"]
-  group_wait: 10s
-  group_interval: 10s
-  repeat_interval: 1h
-  receiver: default
+  group_by: ['alertname', 'severity', 'service']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  receiver: slack-warnings
 
   routes:
-    # Critical alerts — short repeat interval
+    # Critical alerts → PagerDuty (immediate page)
     - match:
         severity: critical
-      receiver: critical-slack
-      repeat_interval: 5m
+      receiver: pagerduty-critical
+      group_wait: 10s
+      repeat_interval: 1h
+      continue: true
 
-    # SLO burn rate alerts
+    # Critical also goes to Slack for visibility
     - match:
-        slo: ingestor-availability
-      receiver: slo-slack
-      repeat_interval: 30m
+        severity: critical
+      receiver: slack-critical
+      group_wait: 10s
+      continue: false
 
-receivers:
-  - name: default
-    webhook_configs:
-      - url: "http://localhost:9095/webhook"
-        send_resolved: true
+    # Warning alerts → Slack channel
+    - match:
+        severity: warning
+      receiver: slack-warnings
+      group_wait: 30s
+      repeat_interval: 4h
 
-  - name: critical-slack
-    slack_configs:
-      - api_url: "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
-        channel: "#observability-alerts"
-        title: '{{ .CommonAnnotations.summary }}'
-        text: '{{ .CommonAnnotations.description }}'
-        send_resolved: true
+    # SLO burn rate alerts → dedicated SLO channel
+    - match_re:
+        alertname: 'SLO.*'
+      receiver: slack-slo
+      group_wait: 15s
+      repeat_interval: 2h
 
-  - name: slo-slack
-    slack_configs:
-      - api_url: "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
-        channel: "#slo-alerts"
-        title: 'SLO Alert: {{ .CommonAnnotations.summary }}'
-        text: '{{ .CommonAnnotations.description }}'
-        send_resolved: true
+    # Anomaly detection alerts → anomaly channel
+    - match:
+        alertname: HighAnomalyRate
+      receiver: slack-anomalies
+      group_wait: 1m
+      repeat_interval: 6h
 
-# Inhibition rules — suppress lower-severity alerts when critical fires
+# ── Inhibition Rules ─────────────────────────────────────────
 inhibit_rules:
+  # If a critical alert fires, suppress warnings for the same alertname
   - source_match:
       severity: critical
     target_match:
       severity: warning
-    equal: ["service"]
+    equal: ['alertname', 'service']
+
+  # If the ingestor is down, suppress downstream alerts
+  - source_match:
+      alertname: IngestorDown
+    target_match_re:
+      alertname: '(KafkaConsumerLag|ProcessorDown).*'
+
+# ── Receivers ─────────────────────────────────────────────────
+receivers:
+  # Slack: Warnings channel
+  - name: slack-warnings
+    slack_configs:
+      - channel: '#obs-warnings'
+        send_resolved: true
+        title: '{{ .GroupLabels.alertname }} — {{ .GroupLabels.severity | toUpper }}'
+        text: >-
+          *Alert:* {{ .GroupLabels.alertname }}
+          *Severity:* {{ .GroupLabels.severity }}
+          *Details:*
+          {{ range .Alerts }}
+          • {{ .Annotations.summary }}
+            Value: {{ .Annotations.value }}
+            Started: {{ .StartsAt.Format "2006-01-02 15:04:05 UTC" }}
+          {{ end }}
+        actions:
+          - type: button
+            text: 'View in Grafana'
+            url: 'http://localhost:3000/d/obs-pipeline-main'
+          - type: button
+            text: 'View in Prometheus'
+            url: 'http://localhost:9090/alerts'
+
+  # Slack: Critical channel
+  - name: slack-critical
+    slack_configs:
+      - channel: '#obs-critical'
+        send_resolved: true
+        color: '{{ if eq .Status "firing" }}danger{{ else }}good{{ end }}'
+        title: '🚨 CRITICAL: {{ .GroupLabels.alertname }}'
+        text: >-
+          *Service:* {{ .GroupLabels.service }}
+          *Impact:* {{ .CommonAnnotations.impact }}
+          {{ range .Alerts }}
+          • {{ .Annotations.summary }}
+            Runbook: {{ .Annotations.runbook_url }}
+          {{ end }}
+
+  # Slack: SLO channel
+  - name: slack-slo
+    slack_configs:
+      - channel: '#obs-slo'
+        send_resolved: true
+        title: 'SLO Alert: {{ .GroupLabels.alertname }}'
+        text: >-
+          *Error Budget Burn Rate:*
+          {{ range .Alerts }}
+          • {{ .Annotations.summary }}
+            Current burn rate: {{ .Annotations.value }}x
+          {{ end }}
+
+  # Slack: Anomaly detection channel
+  - name: slack-anomalies
+    slack_configs:
+      - channel: '#obs-anomalies'
+        send_resolved: true
+        title: 'Anomaly Detected: {{ .GroupLabels.alertname }}'
+        text: >-
+          {{ range .Alerts }}
+          • {{ .Annotations.summary }}
+            Anomaly rate: {{ .Annotations.value }}
+          {{ end }}
+
+  # PagerDuty: Critical incidents
+  - name: pagerduty-critical
+    pagerduty_configs:
+      - routing_key: 'YOUR_PAGERDUTY_INTEGRATION_KEY'
+        severity: critical
+        description: '{{ .GroupLabels.alertname }}: {{ .CommonAnnotations.summary }}'
+        details:
+          firing: '{{ .Alerts.Firing | len }}'
+          resolved: '{{ .Alerts.Resolved | len }}'
+          service: '{{ .GroupLabels.service }}'

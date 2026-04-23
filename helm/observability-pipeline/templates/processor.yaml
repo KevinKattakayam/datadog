@@ -1,0 +1,119 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "obs.fullname" . }}-processor
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: processor
+    {{- include "obs.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.processor.replicaCount }}
+  selector:
+    matchLabels:
+      app: processor
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: processor
+        {{- include "obs.labels" . | nindent 8 }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "{{ .Values.processor.service.metricsPort }}"
+    spec:
+      containers:
+        - name: processor
+          image: "{{ .Values.global.imageRegistry }}{{ .Values.processor.image.repository }}:{{ .Values.processor.image.tag }}"
+          imagePullPolicy: {{ .Values.processor.image.pullPolicy }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.processor.service.metricsPort }}
+              protocol: TCP
+          env:
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: {{ .Values.processor.config.kafkaBootstrapServers | quote }}
+            - name: KAFKA_TOPIC_RAW
+              value: {{ .Values.processor.config.kafkaTopicRaw | quote }}
+            - name: KAFKA_TOPIC_PROCESSED
+              value: {{ .Values.processor.config.kafkaTopicProcessed | quote }}
+            - name: KAFKA_TOPIC_ALERTS
+              value: {{ .Values.processor.config.kafkaTopicAlerts | quote }}
+            - name: KAFKA_TOPIC_DLQ
+              value: {{ .Values.processor.config.kafkaTopicDlq | quote }}
+            - name: KAFKA_CONSUMER_GROUP
+              value: {{ .Values.processor.config.consumerGroup | quote }}
+            - name: CLICKHOUSE_URL
+              value: {{ .Values.processor.config.clickhouseUrl | quote }}
+            - name: PROCESSOR_METRICS_PORT
+              value: {{ .Values.processor.service.metricsPort | quote }}
+            - name: PROCESSOR_BATCH_SIZE
+              value: {{ .Values.processor.config.batchSize | quote }}
+            - name: PROCESSOR_FLUSH_INTERVAL_MS
+              value: {{ .Values.processor.config.flushIntervalMs | quote }}
+            - name: PROCESSOR_EWMA_ALPHA
+              value: {{ .Values.processor.config.ewmaAlpha | quote }}
+            - name: PROCESSOR_ZSCORE_WINDOW
+              value: {{ .Values.processor.config.zscoreWindow | quote }}
+            - name: PROCESSOR_ANOMALY_THRESHOLD
+              value: {{ .Values.processor.config.anomalyThreshold | quote }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.processor.config.otelEndpoint | quote }}
+          resources:
+            {{- toYaml .Values.processor.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "obs.fullname" . }}-processor
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: processor
+    {{- include "obs.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.processor.service.type }}
+  ports:
+    - name: metrics
+      port: {{ .Values.processor.service.metricsPort }}
+      targetPort: metrics
+      protocol: TCP
+  selector:
+    app: processor
+---
+{{- if .Values.processor.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "obs.fullname" . }}-processor
+  namespace: {{ .Values.global.namespace }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "obs.fullname" . }}-processor
+  minReplicas: {{ .Values.processor.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.processor.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.processor.autoscaling.targetCPUUtilization }}
+{{- end }}
+---
+{{- if .Values.processor.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "obs.fullname" . }}-processor
+  namespace: {{ .Values.global.namespace }}
+spec:
+  minAvailable: {{ .Values.processor.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      app: processor
+{{- end }}

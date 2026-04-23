@@ -1,0 +1,48 @@
+{
+  "type": "record",
+  "name": "Metric",
+  "namespace": "com.observability.pipeline",
+  "doc": "Schema for metric data points flowing through the pipeline",
+  "fields": [
+    {
+      "name": "name",
+      "type": "string",
+      "doc": "Dot-separated metric name (e.g., api.request.duration_ms)"
+    },
+    {
+      "name": "value",
+      "type": "double",
+      "doc": "Numeric metric value"
+    },
+    {
+      "name": "unit",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Unit of measurement: ms, bytes, count, percent"
+    },
+    {
+      "name": "tags",
+      "type": {
+        "type": "map",
+        "values": "string"
+      },
+      "doc": "Key-value metadata tags"
+    },
+    {
+      "name": "timestamp",
+      "type": "long",
+      "doc": "Unix epoch seconds"
+    },
+    {
+      "name": "host",
+      "type": "string",
+      "doc": "Originating hostname"
+    },
+    {
+      "name": "trace_id",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "W3C trace ID for distributed tracing correlation"
+    }
+  ]
+}

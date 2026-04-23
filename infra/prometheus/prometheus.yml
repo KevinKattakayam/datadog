@@ -11,6 +11,7 @@ global:
 rule_files:
   - /etc/prometheus/alerts/pipeline.yml
   - /etc/prometheus/alerts/slo.yml
+  - /etc/prometheus/rules/recording.yml
 
 # AlertManager integration
 alerting:

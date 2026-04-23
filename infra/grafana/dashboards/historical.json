@@ -1,0 +1,164 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "title": "Total Metrics Stored (ClickHouse)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "targets": [{
+        "rawSql": "SELECT count() as total FROM observability.metrics",
+        "format": "table"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "steps": [{ "color": "green", "value": null }] },
+          "unit": "short"
+        }
+      }
+    },
+    {
+      "title": "Unique Metric Names",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "targets": [{
+        "rawSql": "SELECT uniq(name) as unique_metrics FROM observability.metrics",
+        "format": "table"
+      }]
+    },
+    {
+      "title": "Unique Hosts Reporting",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "targets": [{
+        "rawSql": "SELECT uniq(host) as unique_hosts FROM observability.metrics",
+        "format": "table"
+      }]
+    },
+    {
+      "title": "Total Anomalies Detected",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "targets": [{
+        "rawSql": "SELECT count() as anomalies FROM observability.metrics WHERE is_anomaly = 1",
+        "format": "table"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 100 },
+            { "color": "red", "value": 1000 }
+          ]}
+        }
+      }
+    },
+    {
+      "title": "Metrics Volume — 90 Day Trend (Hourly)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 4 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "targets": [{
+        "rawSql": "SELECT toStartOfHour(ts) as time, count() as volume FROM observability.metrics WHERE ts >= now() - INTERVAL 90 DAY GROUP BY time ORDER BY time",
+        "format": "timeseries"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 50,
+            "gradientMode": "scheme",
+            "lineWidth": 0
+          },
+          "color": { "mode": "continuous-blues" },
+          "unit": "short"
+        }
+      }
+    },
+    {
+      "title": "Average Value by Metric (Top 10)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "targets": [{
+        "rawSql": "SELECT toStartOfHour(ts) as time, name, avg(value) as avg_value FROM observability.metrics WHERE ts >= now() - INTERVAL 7 DAY GROUP BY time, name ORDER BY time LIMIT 10 BY name",
+        "format": "timeseries"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "fillOpacity": 10, "lineWidth": 2 },
+          "unit": "short"
+        }
+      }
+    },
+    {
+      "title": "p99 Value by Metric (Top 10)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "targets": [{
+        "rawSql": "SELECT toStartOfHour(ts) as time, name, quantile(0.99)(value) as p99_value FROM observability.metrics WHERE ts >= now() - INTERVAL 7 DAY GROUP BY time, name ORDER BY time LIMIT 10 BY name",
+        "format": "timeseries"
+      }]
+    },
+    {
+      "title": "Anomaly Rate by Host (7d)",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "targets": [{
+        "rawSql": "SELECT host, countIf(is_anomaly = 1) as anomalies, count() as total, round(countIf(is_anomaly = 1) / count() * 100, 2) as anomaly_pct FROM observability.metrics WHERE ts >= now() - INTERVAL 7 DAY GROUP BY host ORDER BY anomaly_pct DESC LIMIT 20",
+        "format": "table"
+      }]
+    },
+    {
+      "title": "Alerts Timeline",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "targets": [{
+        "rawSql": "SELECT toStartOfHour(timestamp) as time, severity, count() as alert_count FROM observability.alerts WHERE timestamp >= now() - INTERVAL 30 DAY GROUP BY time, severity ORDER BY time",
+        "format": "timeseries"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "bars", "stacking": { "mode": "normal" } }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "critical" }, "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "warning" }, "properties": [{ "id": "color", "value": { "fixedColor": "yellow", "mode": "fixed" } }] }
+        ]
+      }
+    },
+    {
+      "title": "Storage Compression Stats",
+      "type": "table",
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 28 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "targets": [{
+        "rawSql": "SELECT table, formatReadableSize(sum(data_compressed_bytes)) as compressed, formatReadableSize(sum(data_uncompressed_bytes)) as uncompressed, round(sum(data_uncompressed_bytes) / sum(data_compressed_bytes), 1) as compression_ratio, formatReadableQuantity(sum(rows)) as rows FROM system.parts WHERE database = 'observability' AND active GROUP BY table ORDER BY sum(data_compressed_bytes) DESC",
+        "format": "table"
+      }]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["observability", "clickhouse", "historical"],
+  "templating": { "list": [] },
+  "time": { "from": "now-90d", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Historical Trends (ClickHouse)",
+  "uid": "historical-trends",
+  "version": 1
+}

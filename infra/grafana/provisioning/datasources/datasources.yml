@@ -1,7 +1,3 @@
-# ============================================================
-#  Grafana Data Source Provisioning
-# ============================================================
-
 apiVersion: 1
 
 datasources:
@@ -13,7 +9,6 @@ datasources:
     editable: false
     jsonData:
       timeInterval: 10s
-      httpMethod: POST
 
   - name: ClickHouse
     type: grafana-clickhouse-datasource

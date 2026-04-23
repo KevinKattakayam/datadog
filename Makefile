@@ -90,9 +90,23 @@ status: ## Show service status
 	@echo ""
 	@echo "$(CYAN)▸ Kafka Topics$(RESET)"
 	@docker exec obs-kafka kafka-topics --bootstrap-server localhost:9092 --list 2>/dev/null || true
+	@echo ""
+	@echo "$(CYAN)▸ Kafka Offsets (metrics.raw)$(RESET)"
+	@docker exec obs-kafka kafka-run-class kafka.tools.GetOffsetShell --broker-list localhost:9092 --topic metrics.raw 2>/dev/null || true
+
+integration-test: ## Run end-to-end integration tests
+	@echo "$(CYAN)▸ Running integration tests...$(RESET)"
+	bash tests/integration/test_pipeline.sh
+	@echo "$(GREEN)✓ Integration tests complete$(RESET)"
+
+sdk-test: ## Run SDK unit tests
+	@echo "$(CYAN)▸ Running SDK tests...$(RESET)"
+	cd sdk/go && go test -v ./...
+	@echo "$(GREEN)✓ SDK tests passed$(RESET)"
 
 clean: ## Stop containers and remove all volumes
 	docker compose down -v --remove-orphans
 	rm -rf bin/
 	cd processor && cargo clean 2>/dev/null || true
 	@echo "$(GREEN)✓ Cleaned$(RESET)"
+

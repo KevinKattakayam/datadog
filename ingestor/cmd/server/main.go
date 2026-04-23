@@ -70,6 +70,7 @@ func main() {
 	router.Use(middleware.StructuredLogger(logger))
 	router.Use(middleware.PrometheusMetrics())
 	router.Use(middleware.RateLimit(cfg.RateLimitRPS))
+	router.Use(middleware.TracingMiddleware()) // W3C Trace Context propagation
 
 	// ── Register Handlers ───────────────────────────────────
 	ingestHandler := handler.NewIngestHandler(kafkaProducer, logger)

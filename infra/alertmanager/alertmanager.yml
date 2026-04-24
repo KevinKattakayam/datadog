@@ -5,8 +5,9 @@
 
 global:
   resolve_timeout: 5m
-  # Slack webhook configuration
-  slack_api_url: 'https://hooks.slack.com/services/YOUR_WORKSPACE/YOUR_CHANNEL/YOUR_TOKEN'
+  # Slack webhook — set SLACK_WEBHOOK_URL in .env or K8s secret
+  # Example: https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXX
+  slack_api_url: ''
 
 # ── Notification Templates ────────────────────────────────────
 templates:
@@ -138,9 +139,10 @@ receivers:
           {{ end }}
 
   # PagerDuty: Critical incidents
+  # Set PAGERDUTY_ROUTING_KEY in .env or K8s secret
   - name: pagerduty-critical
     pagerduty_configs:
-      - routing_key: 'YOUR_PAGERDUTY_INTEGRATION_KEY'
+      - routing_key: ''
         severity: critical
         description: '{{ .GroupLabels.alertname }}: {{ .CommonAnnotations.summary }}'
         details:

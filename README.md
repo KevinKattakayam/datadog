@@ -1,10 +1,10 @@
-# Enterprise Observability Pipeline
+# Datadog Clone — Enterprise Observability Pipeline
 
 A production-grade distributed observability pipeline built with **Go**, **Rust**, **Apache Kafka**, **Prometheus**, **Grafana**, and **ClickHouse** — the same class of infrastructure that powers Datadog, New Relic, and Grafana Cloud.
 
 ```
-git clone https://github.com/Kevinbastin/observability-pipeline
-cd observability-pipeline
+git clone https://github.com/Kevinbastin/datadog
+cd datadog
 cp .env.example .env
 make dev
 open http://localhost:3000   # Grafana — admin/admin
@@ -121,8 +121,8 @@ sudo apt install k6    # Ubuntu
 ### 1. Clone and configure
 
 ```bash
-git clone https://github.com/Kevinbastin/observability-pipeline
-cd observability-pipeline
+git clone https://github.com/Kevinbastin/datadog
+cd datadog
 cp .env.example .env
 # Edit .env — set SLACK_WEBHOOK_URL and PAGERDUTY_ROUTING_KEY if you want alerts
 ```
@@ -431,9 +431,9 @@ The Terraform blueprint creates:
 
 > **Before first run:** Create the S3 state bucket and DynamoDB lock table:
 > ```bash
-> aws s3 mb s3://observability-pipeline-tfstate --region us-east-1
+> aws s3 mb s3://datadog-tfstate --region us-east-1
 > aws dynamodb create-table \
->   --table-name observability-pipeline-tflock \
+>   --table-name datadog-tflock \
 >   --attribute-definitions AttributeName=LockID,AttributeType=S \
 >   --key-schema AttributeName=LockID,KeyType=HASH \
 >   --billing-mode PAY_PER_REQUEST
@@ -444,7 +444,7 @@ The Terraform blueprint creates:
 ## Repository Structure
 
 ```
-observability-pipeline/
+datadog/
 ├── ingestor/                         # Go HTTP + gRPC ingestor
 │   ├── cmd/server/main.go            # Entrypoint
 │   ├── internal/
@@ -478,7 +478,7 @@ observability-pipeline/
 │   ├── schema-registry/              # Avro schemas + registration script
 │   └── tempo/tempo.yml               # Trace backend config
 │
-├── helm/observability-pipeline/      # Kubernetes Helm chart
+├── helm/datadog/      # Kubernetes Helm chart
 ├── terraform/                        # AWS EKS infrastructure
 ├── tests/
 │   ├── integration/test_pipeline.sh  # 25 end-to-end tests

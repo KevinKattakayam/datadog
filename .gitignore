@@ -48,3 +48,4 @@ logs/
 # Temporary
 tmp/
 temp/
+processor/target_local/

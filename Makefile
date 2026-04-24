@@ -1,7 +1,12 @@
 # ============================================================
 #  Enterprise Observability Pipeline — Makefile
 # ============================================================
-.PHONY: dev down test lint load-test bench logs clean topics build help
+.PHONY: dev down test lint load-test bench logs clean topics build help \
+       infra fmt fire integration-test sdk-test \
+       helm-template helm-install helm-uninstall \
+       schema-register connect-deploy grpc-gen \
+       terraform-plan terraform-apply
+
 
 # Colors
 GREEN  := \033[0;32m
@@ -104,9 +109,52 @@ sdk-test: ## Run SDK unit tests
 	cd sdk/go && go test -v ./...
 	@echo "$(GREEN)✓ SDK tests passed$(RESET)"
 
+helm-template: ## Render Helm chart templates (dry-run)
+	@echo "$(CYAN)▸ Rendering Helm templates...$(RESET)"
+	helm template obs-pipeline helm/observability-pipeline/ --namespace observability
+	@echo "$(GREEN)✓ Templates rendered$(RESET)"
+
+helm-install: ## Deploy pipeline to Kubernetes via Helm
+	@echo "$(CYAN)▸ Installing Helm chart...$(RESET)"
+	helm upgrade --install obs-pipeline helm/observability-pipeline/ \
+		--namespace observability --create-namespace
+	@echo "$(GREEN)✓ Helm chart deployed$(RESET)"
+
+helm-uninstall: ## Uninstall Helm release
+	helm uninstall obs-pipeline --namespace observability
+
+schema-register: ## Register Avro schemas with Confluent Schema Registry
+	@echo "$(CYAN)▸ Registering Avro schemas...$(RESET)"
+	bash infra/schema-registry/register-schemas.sh
+	@echo "$(GREEN)✓ Schemas registered$(RESET)"
+
+connect-deploy: ## Deploy Kafka Connect ClickHouse sink connector
+	@echo "$(CYAN)▸ Deploying ClickHouse sink connector...$(RESET)"
+	bash infra/kafka-connect/deploy-connector.sh
+	@echo "$(GREEN)✓ Connector deployed$(RESET)"
+
+grpc-gen: ## Generate Go code from protobuf definitions (requires protoc)
+	@echo "$(CYAN)▸ Generating gRPC code from proto...$(RESET)"
+	protoc --go_out=. --go-grpc_out=. \
+		--go_opt=paths=source_relative \
+		--go-grpc_opt=paths=source_relative \
+		ingestor/proto/v1/metric.proto
+	@echo "$(GREEN)✓ Proto generated$(RESET)"
+
+terraform-plan: ## Run Terraform plan for AWS EKS
+	@echo "$(CYAN)▸ Planning infrastructure...$(RESET)"
+	cd terraform && terraform init && terraform plan
+	@echo "$(GREEN)✓ Plan complete$(RESET)"
+
+terraform-apply: ## Apply Terraform (provision AWS EKS)
+	@echo "$(CYAN)▸ Provisioning infrastructure...$(RESET)"
+	cd terraform && terraform apply
+	@echo "$(GREEN)✓ Infrastructure provisioned$(RESET)"
+
 clean: ## Stop containers and remove all volumes
 	docker compose down -v --remove-orphans
 	rm -rf bin/
 	cd processor && cargo clean 2>/dev/null || true
 	@echo "$(GREEN)✓ Cleaned$(RESET)"
+
 

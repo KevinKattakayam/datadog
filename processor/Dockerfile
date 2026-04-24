@@ -1,5 +1,5 @@
 # ── Build stage ──────────────────────────────────────────────
-FROM rust:1.77-bookworm AS builder
+FROM rust:1.86-bookworm AS builder
 
 # Install build dependencies for rdkafka (librdkafka)
 RUN apt-get update && apt-get install -y \

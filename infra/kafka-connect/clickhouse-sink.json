@@ -10,7 +10,7 @@
     "username": "default",
     "password": "",
     "ssl": "false",
-    "exactlyOnce": "true",
+    "exactlyOnce": "false",
     "schemas.enable": "false",
     "key.converter": "org.apache.kafka.connect.storage.StringConverter",
     "value.converter": "org.apache.kafka.connect.json.JsonConverter",
@@ -23,6 +23,7 @@
     "retry.max.retries": "5",
     "retry.backoff.ms": "1000",
     "table.name": "metrics",
+    "clickhouse.topic2table.map": "metrics.processed:metrics",
     "insert.mode": "insert",
     "pk.mode": "none"
   }

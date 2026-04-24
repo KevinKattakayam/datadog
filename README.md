@@ -1,150 +1,168 @@
 # Enterprise Observability Pipeline
 
-A distributed, production-grade observability pipeline built with **Go**, **Rust**, **Apache Kafka**, **Prometheus**, **Grafana**, and **ClickHouse**. The same class of infrastructure that powers Datadog, New Relic, and Grafana Cloud — built from scratch.
-
-```
-Ingestor (Go)  →  Kafka (KRaft)  →  Processor (Rust)  →  ClickHouse + Prometheus  →  Grafana
-```
+A distributed, production-grade observability pipeline built with **Go**, **Rust**, **Apache Kafka**, **Prometheus**, **Grafana**, **ClickHouse**, **Redis**, and **OpenTelemetry**. The same class of infrastructure that powers Datadog, New Relic, and Grafana Cloud — built from scratch for massive scale.
 
 ---
 
 ## Architecture
 
 ```mermaid
-flowchart LR
+flowchart TD
     subgraph Clients
-        A[SDK / Agents]
+        A1[Go SDK]
+        A2[gRPC Clients]
+        A3[HTTP Agents]
     end
-    subgraph Ingestion
-        B[Go Ingestor<br/>HTTP Server<br/>:8080]
+
+    subgraph Ingestion_Layer
+        B[Go Ingestor<br/>REST + gRPC<br/>:8080 / :50051]
+        R[Redis Cache<br/>Recent Metrics<br/>:6379]
     end
-    subgraph Transport
-        C[Apache Kafka<br/>KRaft Mode<br/>:9092]
+
+    subgraph Transport_Layer
+        C[Apache Kafka<br/>KRaft Cluster<br/>:9092]
+        SR[Schema Registry<br/>Avro Validation<br/>:8081]
+        KC[Kafka Connect<br/>CH Sink<br/>:8083]
     end
-    subgraph Processing
+
+    subgraph Processing_Layer
         D[Rust Processor<br/>EWMA + Z-Score<br/>:9091]
     end
-    subgraph Storage
+
+    subgraph Storage_Layer
         E[ClickHouse<br/>Columnar Store<br/>:8123]
         F[Prometheus<br/>TSDB<br/>:9090]
-    end
-    subgraph Visualization
-        G[Grafana<br/>Dashboards<br/>:3000]
+        T[Grafana Tempo<br/>Traces<br/>:3200]
     end
 
-    A -->|POST /ingest| B
-    B -->|metrics.raw| C
+    subgraph Telemetry_Routing
+        OC[OTEL Collector<br/>Metrics + Traces<br/>:4317]
+    end
+
+    subgraph Visualization_Alerting
+        G[Grafana<br/>4 Dashboards<br/>:3000]
+        AM[AlertManager<br/>Slack + PagerDuty<br/>:9094]
+        J[Jaeger UI<br/>Trace Waterfall<br/>:16686]
+    end
+
+    A1 -->|gRPC/HTTP| B
+    A2 -->|gRPC| B
+    A3 -->|HTTP| B
+    B <-->|Cache-Aside| R
+    B -->|OTLP Traces| OC
+    B -->|Avro metrics.raw| C
+    C <-->|Validate| SR
     C -->|consume| D
-    D -->|batch insert| E
-    D -->|metrics.processed| C
+    D -->|OTLP Traces| OC
+    D -->|Avro metrics.processed| C
     D -->|alerts.fired| C
-    B -->|/metrics scrape| F
-    D -->|/metrics scrape| F
+    OC -->|Traces| T
+    OC -->|Traces| J
+    OC -->|Metrics| F
+    KC -->|Replicate| E
     F --> G
     E --> G
+    T --> G
+    F --> AM
 ```
 
-## Components
+---
 
-| Component | Language | Role |
-|-----------|----------|------|
-| **Ingestor** | Go 1.22+ | HTTP server accepting metrics via REST. Validates, rate-limits, and publishes to Kafka using franz-go. |
-| **Kafka** | — | KRaft-mode broker (no ZooKeeper). Topics: `metrics.raw`, `metrics.processed`, `alerts.fired`, `metrics.dlq`. |
-| **Processor** | Rust | Kafka consumer with EWMA and rolling Z-score anomaly detection. Batch-writes to ClickHouse. |
-| **Prometheus** | — | Scrapes `/metrics` from all services. 15-day hot data retention. AlertManager integration. |
-| **ClickHouse** | SQL | Columnar long-term storage (1 year). MergeTree with monthly partitioning, hourly/daily materialized views. |
-| **Grafana** | — | Provisioned dashboards: pipeline overview, SLO/error-budget, ClickHouse historical trends. |
+## 10 Enterprise Integrations
 
-## Quick Start
+| Feature | Impact | Implementation |
+|---|---|---|
+| **Grafana Tempo** | Trace Storage | High-scale distributed trace backend correlating logs, metrics, and traces. |
+| **Jaeger** | Trace UI | Open-source trace visualization for debugging request waterfalls across Go and Rust. |
+| **Redis Caching** | Performance | Cache-aside pattern in Go ingestor for ultra-fast queries of recent metrics. |
+| **Schema Registry** | Governance | Confluent Schema Registry ensuring Avro schema compatibility and preventing breaking changes. |
+| **gRPC Endpoint** | Efficiency | High-performance binary protocol (`proto3`) for high-throughput SDK clients. |
+| **Helm Chart** | Orchestration | Production-ready Helm chart with HPAs, PDBs, and 12-component deployment logic. |
+| **Terraform** | IaC | AWS EKS infrastructure (VPC, 3 node groups, ElastiCache Redis, MSK/ClickHouse ready). |
+| **OTEL Collector** | Telemetry | OpenTelemetry Collector routing OTLP traces to Tempo/Jaeger and metrics to Prometheus. |
+| **Kafka Connect** | Replication | ClickHouse Sink connector for exactly-once replication from Kafka topics to storage. |
+| **AlertManager Pro** | Reliability | Production routing tree: Critical → PagerDuty, Warnings → Slack, SLOs → #obs-slo. |
+
+---
+
+## Quick Start (Local Development)
 
 ```bash
-# Clone
-git clone https://github.com/Kevinbastin/observability-pipeline.git
-cd observability-pipeline
-
-# Start everything
+# 1. Start all 12 containers
 make dev
 
-# Open dashboards
-# Grafana:    http://localhost:3000  (admin/admin)
-# Prometheus: http://localhost:9090
-# Ingestor:   http://localhost:8080/health
-
-# Fire test metrics (1000/sec for 60s)
+# 2. Fire 1000 metrics/sec for 60s (tests the full pipeline)
 make fire
 
-# Check status
-make status
+# 3. View Dashboards
+# Grafana:    http://localhost:3000  (admin/admin)
+# Prometheus: http://localhost:9090
+# Jaeger:     http://localhost:16686
+# Ingestor:   http://localhost:8080/health
 ```
 
-## API
+---
 
-### `POST /ingest` — Single metric
-```json
-{
-  "name": "api.request.duration_ms",
-  "value": 142.7,
-  "unit": "ms",
-  "tags": {"service": "checkout", "endpoint": "/cart/add"},
-  "timestamp": 1714900000,
-  "host": "prod-api-07"
-}
+## 📊 Dashboards Included
+
+1. **Pipeline Overview** — Throughput, latency (p50/p95/p99), consumer lag, and system health.
+2. **SLO & Error Budget** — Availability gauges, error budget burn rates, and SLO target monitoring.
+3. **Historical Trends** — 90-day data queries backed by ClickHouse columnar storage.
+4. **Distributed Tracing** — Trace ingestion rates, OTEL collector health, and trace search.
+
+---
+
+## 🚀 Deployment (Production)
+
+### 1. Provision Infrastructure (AWS)
+```bash
+cd terraform
+terraform init
+terraform apply -var="environment=production"
 ```
 
-### `POST /ingest/batch` — Batch (up to 1000)
-```json
-{
-  "metrics": [ ... ]
-}
+### 2. Deploy to Kubernetes
+```bash
+# Update kubeconfig
+aws eks update-kubeconfig --name obs-pipeline-cluster --region us-east-1
+
+# Install via Helm
+helm install obs-pipeline ./helm/observability-pipeline/ -n observability --create-namespace
 ```
 
-### `GET /health` · `GET /ready` · `GET /metrics`
+---
 
-## Anomaly Detection
+## 🛠️ Tech Stack
 
-The Rust processor applies two complementary algorithms:
+- **Go 1.22+**: Ingestor, SDK, gRPC server.
+- **Rust 1.77+**: High-throughput stream processor.
+- **Kafka 7.6.0**: Message broker with KRaft mode.
+- **ClickHouse 24.3 LTS**: Columnar storage for petabyte-scale analytics.
+- **Prometheus 2.51**: Real-time TSDB and alerting.
+- **Redis 7.2**: Low-latency caching layer.
+- **OpenTelemetry**: Distributed tracing and telemetry routing.
+- **Terraform / Helm**: Infrastructure and orchestration as code.
 
-**EWMA (Exponentially Weighted Moving Average)**
-- Tracks smoothed mean and variance with configurable alpha (default: 0.3)
-- Flags values exceeding N standard deviations (default: 3σ)
-- Fast reaction to sudden changes
+---
 
-**Rolling Z-Score**
-- Maintains a sliding window (default: 300 samples / 5 minutes)
-- Computes statistical Z-score against window distribution
-- Robust against gradual regime changes
+## Project Structure
 
-Both detectors run per-metric per-host. An anomaly from either triggers an alert.
+```
+observability-pipeline/
+├── ingestor/         # Go HTTP/gRPC + Kafka producer + Redis cache
+├── processor/        # Rust Kafka consumer + Anomaly detector (EWMA/Z-Score)
+├── sdk/go/           # Go SDK with batching and auto-instrumentation
+├── infra/            # Configs for Kafka, ClickHouse, Prometheus, Tempo, OTEL
+├── helm/             # Kubernetes Helm charts (12 components)
+├── terraform/        # AWS EKS Infrastructure (VPC, Node Groups, Redis)
+├── proto/            # Protobuf definitions for gRPC ingestion
+├── tests/            # Integration (25 tests) and load testing (k6)
+└── Makefile          # Unified command interface
+```
 
-## Kafka Topics
+---
 
-| Topic | Partitions | Purpose |
-|-------|------------|---------|
-| `metrics.raw` | 6 | Validated metrics from ingestor |
-| `metrics.processed` | 6 | Annotated metrics with anomaly scores |
-| `alerts.fired` | 3 | Alert events for downstream consumers |
-| `metrics.dlq` | 3 | Dead-letter queue (7-day retention) |
-
-## ClickHouse Schema
-
-- **`metrics`** — ReplacingMergeTree, monthly partitions, 1-year TTL, Gorilla + LZ4 compression
-- **`metrics_hourly`** — AggregatingMergeTree materialized view (avg, min, max, p50, p95, p99)
-- **`metrics_daily`** — AggregatingMergeTree daily rollup
-- **`alerts`** — MergeTree audit log
-
-## Alert Rules
-
-| Alert | Condition | Severity |
-|-------|-----------|----------|
-| IngestorHighErrorRate | 5xx rate > 5% for 5m | Critical |
-| KafkaConsumerLagHigh | Lag > 10,000 for 2m | Warning |
-| ProcessorDown | Service unreachable for 1m | Critical |
-| ClickHouseWriteLatencyHigh | p99 > 500ms for 5m | Warning |
-| AnomalyRateSpike | Anomaly rate > 10% for 5m | Warning |
-| SLOBurnRateFast | 14.4x burn rate (5m+1h windows) | Critical |
-| SLOBurnRateSlow | 3x burn rate (6h window) | Warning |
-
-## Design Decisions
+## 🏗️ Design Decisions
 
 **Why Kafka over Redis Streams?**
 Kafka is a distributed commit log — consumers can re-read, replay, and fan-out independently. If the Rust processor crashes, metrics persist in Kafka until recovery. Redis Streams lose data without persistence config and don't support true consumer groups with partition-level parallelism.
@@ -158,77 +176,52 @@ Prometheus is designed for 15-day retention, not multi-year queries. ClickHouse'
 **Why manual Kafka offset commits?**
 `enable.auto.commit=false` with commit-after-ClickHouse-write ensures at-least-once delivery. Combined with ReplacingMergeTree deduplication, this achieves exactly-once semantics without transactions.
 
-## Project Structure
+**Why a circuit breaker on ClickHouse?**
+Under degraded network or ClickHouse overload, retrying writes indefinitely causes cascading failures. The circuit breaker (Closed → Open → Half-Open) with exponential backoff protects the processor from stalling the entire pipeline.
 
-```
-observability-pipeline/
-├── docker-compose.yml          # Full local stack
-├── Makefile                    # dev, test, lint, load-test
-├── ingestor/                   # Go HTTP + Kafka producer
-│   ├── cmd/server/main.go
-│   ├── internal/
-│   │   ├── handler/            # HTTP handlers
-│   │   ├── producer/           # franz-go Kafka producer
-│   │   ├── validator/          # Schema validation
-│   │   ├── middleware/         # Rate limit, logging, metrics
-│   │   └── model/              # Data structures
-│   ├── config/config.go
-│   └── Dockerfile
-├── processor/                  # Rust Kafka consumer + detector
-│   ├── src/
-│   │   ├── main.rs
-│   │   ├── consumer.rs         # Kafka consumer loop
-│   │   ├── detector/           # EWMA + Z-score algorithms
-│   │   ├── storage/            # ClickHouse batch writer
-│   │   ├── producer.rs         # Alert publisher
-│   │   └── metrics.rs          # Prometheus instrumentation
-│   ├── Cargo.toml
-│   └── Dockerfile
-├── infra/                      # Infrastructure configs
-│   ├── kafka/topics.sh
-│   ├── prometheus/             # Scrape + alert rules
-│   ├── alertmanager/
-│   ├── grafana/                # Provisioned dashboards
-│   └── clickhouse/             # Schema + materialized views
-├── k8s/                        # Kubernetes manifests
-├── tests/load/                 # k6 + Go load tests
-└── .github/workflows/ci.yml   # CI pipeline
-```
+**Why per-tenant rate limiting?**
+Multi-tenancy requires isolation. A noisy tenant sending 100k metrics/sec shouldn't starve others. Independent token buckets per tenant, keyed by `X-Tenant-ID`, enforce fair resource allocation without global coordination.
+
+---
 
 ## Makefile Targets
 
 ```
-make dev       # Start full stack
-make down      # Stop all services
-make test      # Go test + Cargo test
-make lint      # Go vet + Cargo clippy
-make fire      # Fire 1000 metrics/sec
-make load-test # k6 load test
-make logs      # Follow container logs
-make status    # Service status + Kafka topics
-make clean     # Stop + remove volumes
+make dev              # Start full 12-container stack
+make down             # Stop all services
+make test             # Go test + Cargo test
+make lint             # Go vet + Cargo clippy
+make fire             # Fire 1000 metrics/sec for 60s
+make load-test        # k6 load test (100k/sec target)
+make logs             # Follow container logs
+make status           # Service health + Kafka topics
+make integration-test # Run 25 end-to-end tests
+make sdk-test         # Run Go SDK tests
+make helm-template    # Render Helm chart (dry-run)
+make helm-install     # Deploy to Kubernetes via Helm
+make schema-register  # Register Avro schemas
+make connect-deploy   # Deploy Kafka Connect sink
+make grpc-gen         # Generate gRPC stubs from proto
+make terraform-plan   # Plan AWS EKS infrastructure
+make terraform-apply  # Provision AWS EKS
+make clean            # Stop + remove all volumes
 ```
 
-## Tech Stack
+---
 
-| Tool | Version | Purpose |
-|------|---------|---------|
-| Go | 1.22+ | Ingestor HTTP server |
-| Rust | 1.77+ | Stream processor |
-| Apache Kafka | 7.6.0 (CP) | Message broker (KRaft) |
-| Prometheus | 2.51.0 | Time-series DB + scraper |
-| Grafana | 10.4.0 | Dashboards + alerting |
-| ClickHouse | 24.3 LTS | Columnar long-term storage |
-| Docker Compose | v2+ | Local orchestration |
+## ⚠️ Known Limitations & What I'd Do Differently
 
-## Known Limitations & Future Work
+- **Single Kafka broker in dev**: Production uses 3-broker StatefulSet with RF=2 (see `k8s/kafka/` and `helm/`)
+- **No TLS/mTLS**: All dev connections are plaintext. Production should use TLS on Kafka, ClickHouse, and gRPC
+- **gRPC uses JSON framing**: The TCP server uses JSON-over-TCP as a protoc-free fallback. Run `make grpc-gen` with protoc installed for full binary gRPC
+- **Schema Registry validation is config-only**: Avro schemas are registered but producers don't enforce runtime validation yet — add `srclient` in Go and `schema_registry_converter` in Rust
+- **Redis cache is opt-in**: The cache layer is built but not wired into the HTTP handler by default. Connect it via dependency injection in `main.go`
+- **Terraform state backend**: The S3 backend requires creating the bucket and DynamoDB table before first `terraform init`
 
-- **Single Kafka broker in dev**: Production deployment uses 3-broker StatefulSet (see `k8s/kafka/`)
-- **No TLS/mTLS yet**: All connections are plaintext in dev; production should add TLS everywhere
-- **No Schema Registry**: Consider Confluent Schema Registry for Avro schemas in production
-- **No distributed tracing**: OpenTelemetry trace propagation planned for v2
-- **Processor scaling**: Currently single-threaded consumer; add partition-aware multi-worker in v2
+---
 
 ## License
 
-MIT
+MIT — Kevin Bastin
+
+

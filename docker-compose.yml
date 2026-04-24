@@ -214,7 +214,7 @@ services:
     networks:
       - observability-net
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/health"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -238,7 +238,8 @@ services:
       KAFKA_TOPIC_ALERTS: alerts.fired
       KAFKA_TOPIC_DLQ: metrics.dlq
       KAFKA_CONSUMER_GROUP: processor-group
-      CLICKHOUSE_URL: http://clickhouse:8123/observability
+      CLICKHOUSE_URL: http://clickhouse:8123
+      PROCESSOR_LOG_LEVEL: info
       PROCESSOR_METRICS_PORT: "9091"
       PROCESSOR_BATCH_SIZE: "1000"
       PROCESSOR_FLUSH_INTERVAL_MS: "500"
@@ -382,7 +383,7 @@ services:
       CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
       CONNECT_PLUGIN_PATH: /usr/share/java,/usr/share/confluent-hub-components
     volumes:
-      - ./infra/kafka-connect/:/etc/kafka-connect/:ro
+      - ./infra/kafka-connect/:/etc/kafka-connect/
     networks:
       - observability-net
     deploy:

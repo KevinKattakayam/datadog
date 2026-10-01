@@ -10,9 +10,9 @@ services:
     container_name: obs-kafka
     hostname: kafka
     ports:
-      - "9092:9092"
-      - "9093:9093"
-      - "29092:29092"
+      - "127.0.0.1:9092:9092"
+      - "127.0.0.1:9093:9093"
+      - "127.0.0.1:29092:29092"
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
@@ -67,7 +67,7 @@ services:
 
   # ── Kafka Exporter (Prometheus metrics for Kafka) ──────────
   kafka-exporter:
-    image: danielqsj/kafka-exporter:latest
+    image: danielqsj/kafka-exporter@sha256:4150e46b2e9697ac30e4be8de03ec1704b4bdc7037577b83b8d35a32be298c16
     container_name: obs-kafka-exporter
     depends_on:
       kafka:
@@ -75,7 +75,7 @@ services:
     command:
       - --kafka.server=kafka:9092
     ports:
-      - "9308:9308"
+      - "127.0.0.1:9308:9308"
     networks:
       - observability-net
     deploy:
@@ -88,8 +88,8 @@ services:
     image: clickhouse/clickhouse-server:24.3-alpine
     container_name: obs-clickhouse
     ports:
-      - "8123:8123"
-      - "9000:9000"
+      - "127.0.0.1:8123:8123"
+      - "127.0.0.1:9000:9000"
     volumes:
       - clickhouse-data:/var/lib/clickhouse
       - ./infra/clickhouse/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
@@ -110,12 +110,26 @@ services:
         limits:
           memory: 1G
 
+  # Apply additive schema changes and runtime users on both fresh and reused
+  # local volumes. The image entrypoint init scripts only run on empty volumes.
+  clickhouse-bootstrap:
+    image: clickhouse/clickhouse-server:24.3-alpine
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    volumes:
+      - ./infra/clickhouse/schema.sql:/bootstrap/schema.sql:ro
+      - ./infra/clickhouse/bootstrap.sh:/bootstrap/bootstrap.sh:ro
+    entrypoint: ["/bin/bash", "/bootstrap/bootstrap.sh"]
+    networks:
+      - observability-net
+
   # ── Prometheus (time-series database + scraper) ────────────
   prometheus:
     image: prom/prometheus:v2.51.0
     container_name: obs-prometheus
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     volumes:
       - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./infra/prometheus/alerts/:/etc/prometheus/alerts/:ro
@@ -126,7 +140,6 @@ services:
       - --storage.tsdb.path=/prometheus
       - --storage.tsdb.retention.time=15d
       - --web.enable-lifecycle
-      - --web.enable-admin-api
     networks:
       - observability-net
     healthcheck:
@@ -144,9 +157,9 @@ services:
     image: prom/alertmanager:v0.27.0
     container_name: obs-alertmanager
     ports:
-      - "9094:9093"
+      - "127.0.0.1:9094:9093"
     volumes:
-      - ./infra/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./infra/alertmanager/alertmanager.local.yml:/etc/alertmanager/alertmanager.yml:ro
     command:
       - --config.file=/etc/alertmanager/alertmanager.yml
       - --storage.path=/alertmanager
@@ -162,10 +175,11 @@ services:
     image: grafana/grafana:10.4.0
     container_name: obs-grafana
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
+      CLICKHOUSE_GRAFANA_PASSWORD: grafana_dev
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/pipeline.json
       GF_INSTALL_PLUGINS: grafana-clickhouse-datasource
     volumes:
@@ -175,6 +189,8 @@ services:
     depends_on:
       prometheus:
         condition: service_healthy
+      clickhouse-bootstrap:
+        condition: service_completed_successfully
     networks:
       - observability-net
     healthcheck:
@@ -194,8 +210,7 @@ services:
       dockerfile: Dockerfile
     container_name: obs-ingestor
     ports:
-      - "8080:8080"
-      - "50051:50051"
+      - "127.0.0.1:8080:8080"
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       KAFKA_TOPIC_RAW: metrics.raw
@@ -205,8 +220,7 @@ services:
       INGESTOR_BATCH_SIZE: "500"
       INGESTOR_FLUSH_INTERVAL_MS: "100"
       INGESTOR_RATE_LIMIT_RPS: "10000"
-      REDIS_URL: redis:6379
-      SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      AUTH_ALLOW_INSECURE_DEV: "true"
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
     depends_on:
       kafka:
@@ -230,15 +244,20 @@ services:
       dockerfile: Dockerfile
     container_name: obs-processor
     ports:
-      - "9091:9091"
+      - "127.0.0.1:9091:9091"
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       KAFKA_TOPIC_RAW: metrics.raw
       KAFKA_TOPIC_PROCESSED: metrics.processed
       KAFKA_TOPIC_ALERTS: alerts.fired
       KAFKA_TOPIC_DLQ: metrics.dlq
-      KAFKA_CONSUMER_GROUP: processor-group
+      # Keep stale records on reused local volumes out of smoke-test runs.
+      # Production defaults to earliest in the processor configuration.
+      KAFKA_CONSUMER_GROUP: processor-group-local
+      KAFKA_AUTO_OFFSET_RESET: latest
       CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: processor
+      CLICKHOUSE_PASSWORD: processor_dev
       PROCESSOR_LOG_LEVEL: info
       PROCESSOR_METRICS_PORT: "9091"
       PROCESSOR_BATCH_SIZE: "1000"
@@ -250,8 +269,8 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
-      clickhouse:
-        condition: service_healthy
+      clickhouse-bootstrap:
+        condition: service_completed_successfully
     networks:
       - observability-net
     deploy:
@@ -268,9 +287,9 @@ services:
       - ./infra/tempo/tempo.yml:/etc/tempo/tempo.yml:ro
       - tempo-data:/var/tempo
     ports:
-      - "3200:3200"
-      - "4317:4317"
-      - "4318:4318"
+      - "127.0.0.1:3200:3200"
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:4318:4318"
     networks:
       - observability-net
     deploy:
@@ -287,109 +306,14 @@ services:
       SPAN_STORAGE_TYPE: memory
       MEMORY_MAX_TRACES: "50000"
     ports:
-      - "16686:16686"
-      - "14268:14268"
+      - "127.0.0.1:16686:16686"
+      - "127.0.0.1:14268:14268"
     networks:
       - observability-net
     deploy:
       resources:
         limits:
           memory: 512M
-
-  # ── Redis (metric caching layer) ────────────────────────────
-  redis:
-    image: redis:7.2-alpine
-    container_name: obs-redis
-    command: >
-      redis-server
-      --maxmemory 256mb
-      --maxmemory-policy allkeys-lru
-      --appendonly yes
-      --appendfsync everysec
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis-data:/data
-    networks:
-      - observability-net
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    deploy:
-      resources:
-        limits:
-          memory: 256M
-
-  # ── Confluent Schema Registry (Avro validation) ─────────────
-  schema-registry:
-    image: confluentinc/cp-schema-registry:7.6.0
-    container_name: obs-schema-registry
-    depends_on:
-      kafka:
-        condition: service_healthy
-    ports:
-      - "8081:8081"
-    environment:
-      SCHEMA_REGISTRY_HOST_NAME: schema-registry
-      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:9092
-      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
-      SCHEMA_REGISTRY_SCHEMA_COMPATIBILITY_LEVEL: BACKWARD
-    networks:
-      - observability-net
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-
-  # ── Schema Registry Initializer ─────────────────────────────
-  schema-init:
-    image: confluentinc/cp-schema-registry:7.6.0
-    container_name: obs-schema-init
-    depends_on:
-      - schema-registry
-    volumes:
-      - ./infra/schema-registry/schemas/:/etc/schema-registry/schemas/:ro
-      - ./infra/schema-registry/register-schemas.sh:/register-schemas.sh:ro
-    entrypoint: ["/bin/bash", "/register-schemas.sh"]
-    environment:
-      SCHEMA_REGISTRY_URL: http://schema-registry:8081
-    networks:
-      - observability-net
-
-  # ── Kafka Connect (sink connectors) ─────────────────────────
-  kafka-connect:
-    image: confluentinc/cp-kafka-connect:7.6.0
-    container_name: obs-kafka-connect
-    depends_on:
-      kafka:
-        condition: service_healthy
-    ports:
-      - "8083:8083"
-    environment:
-      CONNECT_BOOTSTRAP_SERVERS: kafka:9092
-      CONNECT_REST_ADVERTISED_HOST_NAME: kafka-connect
-      CONNECT_REST_PORT: 8083
-      CONNECT_GROUP_ID: obs-connect-group
-      CONNECT_CONFIG_STORAGE_TOPIC: _connect-configs
-      CONNECT_OFFSET_STORAGE_TOPIC: _connect-offsets
-      CONNECT_STATUS_STORAGE_TOPIC: _connect-status
-      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
-      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
-      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
-      CONNECT_KEY_CONVERTER: org.apache.kafka.connect.storage.StringConverter
-      CONNECT_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
-      CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
-      CONNECT_PLUGIN_PATH: /usr/share/java,/usr/share/confluent-hub-components
-    volumes:
-      - ./infra/kafka-connect/:/etc/kafka-connect/
-    networks:
-      - observability-net
-    deploy:
-      resources:
-        limits:
-          memory: 1G
 
   # ── OpenTelemetry Collector ─────────────────────────────────
   otel-collector:
@@ -399,10 +323,10 @@ services:
     volumes:
       - ./infra/otel-collector/config.yml:/etc/otel/config.yml:ro
     ports:
-      - "4319:4317"
-      - "4320:4318"
-      - "8888:8888"
-      - "8889:8889"
+      - "127.0.0.1:4319:4317"
+      - "127.0.0.1:4320:4318"
+      - "127.0.0.1:8888:8888"
+      - "127.0.0.1:8889:8889"
     depends_on:
       - tempo
       - jaeger
@@ -419,9 +343,7 @@ volumes:
   prometheus-data:
   grafana-data:
   tempo-data:
-  redis-data:
 
 networks:
   observability-net:
     driver: bridge
-

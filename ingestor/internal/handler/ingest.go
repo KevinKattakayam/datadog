@@ -51,16 +51,19 @@ func (h *IngestHandler) IngestSingle(c *gin.Context) {
 		return
 	}
 
-	// Publish to Kafka
+	tenantID := middleware.GetTenantID(c)
+
+	// Publish to Kafka — synchronous, returns error if not acked
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
-	if err := h.producer.Publish(ctx, &metric); err != nil {
-		h.logger.Error("publish failed", "error", err, "metric", metric.Name)
-		c.JSON(http.StatusInternalServerError, model.ErrorResponse{
-			Error: "failed to publish metric",
-			Code:  http.StatusInternalServerError,
+	if err := h.producer.Publish(ctx, tenantID, &metric); err != nil {
+		h.logger.Error("publish failed", "error", err, "metric", metric.Name, "tenant", tenantID)
+		c.Header("Retry-After", "5")
+		c.JSON(http.StatusServiceUnavailable, model.ErrorResponse{
+			Error: "upstream unavailable; retry with backoff",
+			Code:  http.StatusServiceUnavailable,
 		})
 		return
 	}
@@ -107,21 +110,43 @@ func (h *IngestHandler) IngestBatch(c *gin.Context) {
 		return
 	}
 
-	// Publish batch to Kafka
+	tenantID := middleware.GetTenantID(c)
+
+	// Publish batch to Kafka — synchronous
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
 
-	published, err := h.producer.PublishBatch(ctx, validMetrics)
-	if err != nil {
-		h.logger.Error("batch publish failed", "error", err)
-	}
+	acked, err := h.producer.PublishBatch(ctx, tenantID, validMetrics)
 	middleware.RecordKafkaPublishDuration(time.Since(start))
 	middleware.RecordBatchSize(float64(len(validMetrics)))
 
-	c.JSON(http.StatusAccepted, model.IngestResponse{
-		Status:   "accepted",
-		Accepted: published,
-		Message:  "",
-	})
+	skipped := len(batch.Metrics) - len(validMetrics)
+
+	switch {
+	case err != nil && acked == 0:
+		// Total failure — nothing reached Kafka
+		h.logger.Error("batch publish failed", "error", err, "tenant", tenantID)
+		c.Header("Retry-After", "5")
+		c.JSON(http.StatusServiceUnavailable, model.ErrorResponse{
+			Error: "upstream unavailable; retry with backoff",
+			Code:  http.StatusServiceUnavailable,
+		})
+	case err != nil:
+		// Partial failure — some records acked, some not
+		c.JSON(http.StatusMultiStatus, model.IngestResponse{
+			Status:   "partial",
+			Accepted: acked,
+			Rejected: len(validMetrics) - acked,
+			Skipped:  skipped,
+			Message:  "resend the rejected records",
+		})
+	default:
+		// Full success
+		c.JSON(http.StatusAccepted, model.IngestResponse{
+			Status:   "accepted",
+			Accepted: acked,
+			Skipped:  skipped,
+		})
+	}
 }

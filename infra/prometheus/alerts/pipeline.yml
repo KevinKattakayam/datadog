@@ -106,3 +106,53 @@ groups:
         annotations:
           summary: "Kafka broker is DOWN"
           description: "No Kafka brokers are reachable."
+
+  - name: pipeline.dlq
+    rules:
+      # Messages entering the dead-letter queue
+      - alert: DLQRateHigh
+        expr: sum(rate(processor_dlq_messages_total[5m])) by (reason) > 1
+        for: 5m
+        labels:
+          severity: warning
+          service: processor
+        annotations:
+          summary: "Messages entering DLQ: {{ $labels.reason }} at {{ $value | humanize }}/s"
+          runbook_url: "https://github.com/Kevinbastin/datadog/blob/master/docs/runbooks/dlq.md"
+
+  - name: pipeline.circuit
+    rules:
+      # Circuit breaker open — ClickHouse is degraded
+      - alert: CircuitBreakerOpen
+        expr: processor_circuit_breaker_state == 1
+        for: 1m
+        labels:
+          severity: critical
+          service: processor
+        annotations:
+          summary: "Processor circuit breaker is OPEN"
+          description: "The ClickHouse circuit breaker is open. The processor is pausing consumption. Consumer lag will grow."
+          runbook_url: "https://github.com/Kevinbastin/datadog/blob/master/docs/runbooks/circuit-open.md"
+
+      # Detector eviction rate high — cardinality exceeds budget
+      - alert: DetectorEvictionRateHigh
+        expr: rate(processor_detector_evictions_total[5m]) > 10
+        for: 10m
+        labels:
+          severity: warning
+          service: processor
+        annotations:
+          summary: "Detector baselines are being thrashed"
+          description: "Detector eviction rate: {{ $value | humanize }}/s. Metric cardinality exceeds detector budget."
+          runbook_url: "https://github.com/Kevinbastin/datadog/blob/master/docs/runbooks/cardinality.md"
+
+      - alert: DetectorCapacityHigh
+        expr: processor_detector_series_tracked / processor_detector_series_capacity > 0.8
+        for: 10m
+        labels:
+          severity: warning
+          service: processor
+        annotations:
+          summary: "Detector state is above 80% capacity"
+          description: "The bounded detector cache is approaching capacity; review cardinality attribution before changing the limit."
+          runbook_url: "https://github.com/Kevinbastin/datadog/blob/master/docs/runbooks/cardinality.md"

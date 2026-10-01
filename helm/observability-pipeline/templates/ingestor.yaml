@@ -30,16 +30,22 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      securityContext:
+        {{- toYaml .Values.ingestor.podSecurityContext | nindent 8 }}
+      {{- with .Values.ingestor.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      terminationGracePeriodSeconds: 45
       containers:
         - name: ingestor
           image: "{{ .Values.global.imageRegistry }}{{ .Values.ingestor.image.repository }}:{{ .Values.ingestor.image.tag }}"
           imagePullPolicy: {{ .Values.ingestor.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.ingestor.containerSecurityContext | nindent 12 }}
           ports:
             - name: http
               containerPort: {{ .Values.ingestor.service.httpPort }}
-              protocol: TCP
-            - name: grpc
-              containerPort: {{ .Values.ingestor.service.grpcPort }}
               protocol: TCP
           env:
             - name: KAFKA_BOOTSTRAP_SERVERS
@@ -48,8 +54,6 @@ spec:
               value: {{ .Values.ingestor.config.kafkaTopicRaw | quote }}
             - name: INGESTOR_PORT
               value: {{ .Values.ingestor.service.httpPort | quote }}
-            - name: INGESTOR_GRPC_PORT
-              value: {{ .Values.ingestor.service.grpcPort | quote }}
             - name: INGESTOR_BATCH_SIZE
               value: {{ .Values.ingestor.config.batchSize | quote }}
             - name: INGESTOR_FLUSH_INTERVAL_MS
@@ -58,12 +62,12 @@ spec:
               value: {{ .Values.ingestor.config.rateLimitRPS | quote }}
             - name: INGESTOR_LOG_LEVEL
               value: {{ .Values.ingestor.config.logLevel | quote }}
-            - name: REDIS_URL
-              value: {{ .Values.ingestor.config.redisUrl | quote }}
-            - name: SCHEMA_REGISTRY_URL
-              value: {{ .Values.ingestor.config.schemaRegistryUrl | quote }}
-            - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: {{ .Values.ingestor.config.otelEndpoint | quote }}
+            - name: API_KEYS_PATH
+              value: {{ .Values.ingestor.config.apiKeysPath | quote }}
+            - name: AUTH_ALLOW_INSECURE_DEV
+              value: "false"
+            - name: INGESTOR_DRAIN_DELAY_SECONDS
+              value: {{ .Values.ingestor.config.drainDelaySeconds | quote }}
           livenessProbe:
             httpGet:
               path: {{ .Values.ingestor.probes.liveness.path }}
@@ -78,6 +82,15 @@ spec:
             periodSeconds: {{ .Values.ingestor.probes.readiness.periodSeconds }}
           resources:
             {{- toYaml .Values.ingestor.resources | nindent 12 }}
+          volumeMounts:
+            - name: api-keys
+              mountPath: /etc/secrets
+              readOnly: true
+      volumes:
+        - name: api-keys
+          secret:
+            secretName: {{ .Values.ingestor.apiKeysSecret | quote }}
+            defaultMode: 0440
       {{- with .Values.ingestor.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

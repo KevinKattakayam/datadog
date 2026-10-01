@@ -9,6 +9,7 @@ vendor/
 # Rust
 processor/target/
 **/*.rs.bk
+helm/observability-pipeline/charts/
 
 # IDE
 .idea/

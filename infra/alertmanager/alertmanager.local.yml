@@ -1,0 +1,12 @@
+# Local Compose profile: keep Alertmanager healthy without sending notifications
+# to external services. Configure real receivers from secret-backed deployment
+# configuration before using the production example.
+route:
+  receiver: discard-local-notifications
+  group_by: [alertname]
+  group_wait: 5s
+  group_interval: 1m
+  repeat_interval: 1h
+
+receivers:
+  - name: discard-local-notifications

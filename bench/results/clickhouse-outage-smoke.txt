@@ -1,0 +1,33 @@
+[0;36m▸ Running ClickHouse outage chaos test...[0m
+bash bench/chaos/clickhouse_outage.sh
+[0;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[0m
+[0;36m  Chaos Test: ClickHouse 5s Outage[0m
+[0;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[0m
+
+[0;33m▸ Starting load generator at 50/sec...[0m
+[0;33m▸ Running for 2s to establish steady state...[0m
+[0;31m▸ PAUSING ClickHouse for 5s...[0m
+obs-clickhouse
+  Outage 5s: lag=384
+[0;32m▸ UNPAUSING ClickHouse...[0m
+obs-clickhouse
+[0;33m▸ Waiting for load generator to complete...[0m
+[0;33m▸ Waiting for consumer lag to drain...[0m
+  Lag: 414 (0s since unpause)
+  Lag: 359 (5s since unpause)
+  Lag: 304 (10s since unpause)
+  Lag: 249 (15s since unpause)
+  Lag: 189 (20s since unpause)
+  Lag: 134 (25s since unpause)
+  Lag: 79 (30s since unpause)
+  Lag: 24 (35s since unpause)
+  Lag drained to zero in 53s
+
+[0;36m▸ Verifying results...[0m
+
+[0;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[0m
+  sent_accepted=450  rows=450  unique=450
+  rejected_batches=0
+  peak_lag=384  recovery=53s
+  [0;32m✓ PASSED — data survived ClickHouse outage[0m
+[0;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[0m

@@ -23,10 +23,6 @@ dependencies:
     version: "26.x.x"
     repository: https://charts.bitnami.com/bitnami
     condition: kafka.enabled
-  - name: redis
-    version: "18.x.x"
-    repository: https://charts.bitnami.com/bitnami
-    condition: redis.enabled
   - name: clickhouse
     version: "4.x.x"
     repository: https://charts.bitnami.com/bitnami

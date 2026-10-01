@@ -5,9 +5,7 @@
 
 global:
   resolve_timeout: 5m
-  # Slack webhook — set SLACK_WEBHOOK_URL in .env or K8s secret
-  # Example: https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXX
-  slack_api_url: ''
+  # Configure slack_api_url in a deployment-specific secret-backed config.
 
 # ── Notification Templates ────────────────────────────────────
 templates:

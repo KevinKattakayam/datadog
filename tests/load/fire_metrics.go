@@ -51,6 +51,10 @@ var metricNames = []string{
 
 func main() {
 	flag.Parse()
+	if *rate <= 0 || *batch <= 0 || *rate < *batch || *duration <= 0 {
+		fmt.Fprintln(os.Stderr, "rate, duration and batch must be positive; rate must be at least batch")
+		os.Exit(2)
+	}
 
 	fmt.Printf("🚀 Load test: %d metrics/sec for %s → %s\n", *rate, *duration, *url)
 
@@ -58,12 +62,14 @@ func main() {
 	var errors atomic.Int64
 	client := &http.Client{Timeout: 10 * time.Second}
 
-	ticker := time.NewTicker(time.Second / time.Duration(*rate / *batch))
+	interval := time.Duration(float64(time.Second) * float64(*batch) / float64(*rate))
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	deadline := time.After(*duration)
 	startTime := time.Now()
 	var wg sync.WaitGroup
+	inFlight := make(chan struct{}, 100)
 
 	for {
 		select {
@@ -77,11 +83,16 @@ func main() {
 			fmt.Printf("   Sent:        %d metrics\n", totalSent)
 			fmt.Printf("   Errors:      %d\n", totalErrors)
 			fmt.Printf("   Throughput:  %.0f metrics/sec\n", float64(totalSent)/elapsed.Seconds())
+			if totalErrors > 0 {
+				os.Exit(1)
+			}
 			os.Exit(0)
 		case <-ticker.C:
+			inFlight <- struct{}{}
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
+				defer func() { <-inFlight }()
 				metrics := generateBatch(*batch)
 				if err := sendBatch(client, metrics); err != nil {
 					errors.Add(1)
@@ -154,6 +165,19 @@ func sendBatch(client *http.Client, metrics []Metric) error {
 
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	if resp.StatusCode != http.StatusAccepted {
+		return fmt.Errorf("HTTP %d indicates a partial response", resp.StatusCode)
+	}
+	var result struct {
+		Accepted int    `json:"accepted"`
+		Status   string `json:"status"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return fmt.Errorf("decode ingest response: %w", err)
+	}
+	if result.Accepted != len(metrics) || result.Status != "accepted" {
+		return fmt.Errorf("ingestor acknowledged %d of %d metrics", result.Accepted, len(metrics))
 	}
 	return nil
 }

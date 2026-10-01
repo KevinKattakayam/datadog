@@ -4,8 +4,9 @@
 .PHONY: dev down test lint load-test bench logs clean topics build help \
        infra fmt fire integration-test sdk-test \
        helm-template helm-install helm-uninstall \
-       schema-register connect-deploy grpc-gen \
-       terraform-plan terraform-apply
+       grpc-gen \
+       terraform-plan terraform-apply \
+       chaos chaos-kill9 chaos-clickhouse bench-throughput
 
 
 # Colors
@@ -22,7 +23,7 @@ help: ## Show this help
 	@echo "$(CYAN)Enterprise Observability Pipeline$(RESET)"
 	@echo "$(YELLOW)─────────────────────────────────$(RESET)"
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
-		awk 'BEGIN {FS = ":.*?## "}; {printf "  $(GREEN)%-15s$(RESET) %s\n", $$1, $$2}'
+		awk 'BEGIN {FS = ":.*?## "}; {printf "  $(GREEN)%-20s$(RESET) %s\n", $$1, $$2}'
 
 dev: ## Start full stack (docker compose up + build)
 	@echo "$(CYAN)▸ Starting observability pipeline...$(RESET)"
@@ -77,6 +78,14 @@ fire: ## Fire test metrics at the ingestor
 bench: ## Run Rust benchmarks
 	cd processor && cargo bench
 
+bench-throughput: ## Run sustained throughput test (5 min, 10k/sec)
+	@echo "$(CYAN)▸ Running throughput benchmark...$(RESET)"
+	go run tests/load/fire_metrics.go --rate=10000 --duration=300s
+	@echo ""
+	@echo "$(CYAN)▸ End-to-end freshness:$(RESET)"
+	@curl -s "http://localhost:8123/?query=SELECT+now()-max(ts)+AS+lag+FROM+observability.metrics"
+	@echo ""
+
 logs: ## Follow all container logs
 	docker compose logs -f
 
@@ -98,6 +107,9 @@ status: ## Show service status
 	@echo ""
 	@echo "$(CYAN)▸ Kafka Offsets (metrics.raw)$(RESET)"
 	@docker exec obs-kafka kafka-run-class kafka.tools.GetOffsetShell --broker-list localhost:9092 --topic metrics.raw 2>/dev/null || true
+	@echo ""
+	@echo "$(CYAN)▸ Consumer Lag$(RESET)"
+	@docker exec obs-kafka kafka-consumer-groups --bootstrap-server localhost:9092 --describe --group processor-group-local 2>/dev/null || true
 
 integration-test: ## Run end-to-end integration tests
 	@echo "$(CYAN)▸ Running integration tests...$(RESET)"
@@ -109,29 +121,35 @@ sdk-test: ## Run SDK unit tests
 	cd sdk/go && go test -v ./...
 	@echo "$(GREEN)✓ SDK tests passed$(RESET)"
 
+# ── Chaos Tests ───────────────────────────────────────────────
+
+chaos: chaos-kill9 chaos-clickhouse ## Run all chaos tests
+
+chaos-kill9: ## Chaos: kill -9 processor, assert zero data loss
+	@echo "$(CYAN)▸ Running kill -9 chaos test...$(RESET)"
+	bash bench/chaos/kill9_no_loss.sh
+
+chaos-clickhouse: ## Chaos: pause ClickHouse, assert recovery and zero loss
+	@echo "$(CYAN)▸ Running ClickHouse outage chaos test...$(RESET)"
+	bash bench/chaos/clickhouse_outage.sh
+
+# ── Helm ──────────────────────────────────────────────────────
+
 helm-template: ## Render Helm chart templates (dry-run)
 	@echo "$(CYAN)▸ Rendering Helm templates...$(RESET)"
+	helm dependency build helm/observability-pipeline/
 	helm template obs-pipeline helm/observability-pipeline/ --namespace observability
 	@echo "$(GREEN)✓ Templates rendered$(RESET)"
 
 helm-install: ## Deploy pipeline to Kubernetes via Helm
 	@echo "$(CYAN)▸ Installing Helm chart...$(RESET)"
+	helm dependency build helm/observability-pipeline/
 	helm upgrade --install obs-pipeline helm/observability-pipeline/ \
 		--namespace observability --create-namespace
 	@echo "$(GREEN)✓ Helm chart deployed$(RESET)"
 
 helm-uninstall: ## Uninstall Helm release
 	helm uninstall obs-pipeline --namespace observability
-
-schema-register: ## Register Avro schemas with Confluent Schema Registry
-	@echo "$(CYAN)▸ Registering Avro schemas...$(RESET)"
-	bash infra/schema-registry/register-schemas.sh
-	@echo "$(GREEN)✓ Schemas registered$(RESET)"
-
-connect-deploy: ## Deploy Kafka Connect ClickHouse sink connector
-	@echo "$(CYAN)▸ Deploying ClickHouse sink connector...$(RESET)"
-	bash infra/kafka-connect/deploy-connector.sh
-	@echo "$(GREEN)✓ Connector deployed$(RESET)"
 
 grpc-gen: ## Generate Go code from protobuf definitions (requires protoc)
 	@echo "$(CYAN)▸ Generating gRPC code from proto...$(RESET)"
@@ -156,5 +174,3 @@ clean: ## Stop containers and remove all volumes
 	rm -rf bin/
 	cd processor && cargo clean 2>/dev/null || true
 	@echo "$(GREEN)✓ Cleaned$(RESET)"
-
-

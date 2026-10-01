@@ -12,6 +12,21 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// TenantExtractor extracts the tenant ID from the X-Tenant-ID header.
+// If the header is missing, it defaults to DefaultTenantID ("default").
+func TenantExtractor() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		tenantID := c.GetHeader(TenantHeaderKey)
+		if tenantID == "" {
+			tenantID = DefaultTenantID
+		} else {
+			tenantID = strings.ToLower(strings.TrimSpace(tenantID))
+		}
+		c.Set(TenantContextKey, tenantID)
+		c.Next()
+	}
+}
+
 const (
 	// TenantHeaderKey is the HTTP header for tenant identification.
 	TenantHeaderKey = "X-Tenant-ID"
@@ -36,13 +51,14 @@ type TenantConfig struct {
 
 // TenantRateLimiter provides per-tenant rate limiting using token buckets.
 type TenantRateLimiter struct {
-	mu       sync.RWMutex
-	buckets  map[string]*tokenBucket
-	configs  map[string]TenantConfig
+	mu         sync.RWMutex
+	buckets    map[string]*tokenBucket
+	configs    map[string]TenantConfig
 	defaultRPS int
 }
 
 type tokenBucket struct {
+	mu         sync.Mutex
 	tokens     float64
 	maxTokens  float64
 	refillRate float64
@@ -59,6 +75,9 @@ func newTokenBucket(rps int) *tokenBucket {
 }
 
 func (tb *tokenBucket) allow() bool {
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+
 	now := time.Now()
 	elapsed := now.Sub(tb.lastRefill).Seconds()
 	tb.tokens += elapsed * tb.refillRate
@@ -90,11 +109,19 @@ func NewTenantRateLimiter(defaultRPS int, configs map[string]TenantConfig) *Tena
 }
 
 func (trl *TenantRateLimiter) getBucket(tenantID string) *tokenBucket {
+	// Read-mostly path: most requests hit an existing bucket
+	trl.mu.RLock()
+	bucket, exists := trl.buckets[tenantID]
+	trl.mu.RUnlock()
+	if exists {
+		return bucket
+	}
+
+	// Write path: create a new bucket
 	trl.mu.Lock()
 	defer trl.mu.Unlock()
-
-	bucket, exists := trl.buckets[tenantID]
-	if !exists {
+	// Double-check after acquiring write lock
+	if bucket, exists = trl.buckets[tenantID]; !exists {
 		rps := trl.defaultRPS
 		if cfg, ok := trl.configs[tenantID]; ok {
 			rps = cfg.MaxRPS
@@ -103,35 +130,6 @@ func (trl *TenantRateLimiter) getBucket(tenantID string) *tokenBucket {
 		trl.buckets[tenantID] = bucket
 	}
 	return bucket
-}
-
-// TenantExtractor returns gin middleware that extracts tenant ID from headers
-// and stores it in the request context. The tenant ID is used downstream
-// as the Kafka partition key for data locality.
-func TenantExtractor() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		tenantID := c.GetHeader(TenantHeaderKey)
-		if tenantID == "" {
-			// Fallback: check Authorization header for API key with tenant prefix
-			auth := c.GetHeader("Authorization")
-			if strings.HasPrefix(auth, "Bearer ") {
-				parts := strings.SplitN(strings.TrimPrefix(auth, "Bearer "), ".", 2)
-				if len(parts) == 2 {
-					tenantID = parts[0]
-				}
-			}
-		}
-		if tenantID == "" {
-			tenantID = DefaultTenantID
-		}
-
-		// Normalize: lowercase, trim whitespace
-		tenantID = strings.ToLower(strings.TrimSpace(tenantID))
-
-		c.Set(TenantContextKey, tenantID)
-		c.Header("X-Tenant-ID", tenantID)
-		c.Next()
-	}
 }
 
 // TenantRateLimit returns gin middleware that applies per-tenant rate limiting.

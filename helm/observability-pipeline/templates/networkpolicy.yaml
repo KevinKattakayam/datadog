@@ -1,0 +1,81 @@
+{{- if .Values.networkPolicies.enabled }}
+# ── Ingestor Network Policy ──────────────────────────────────
+# Allow: ingress from any (behind an Ingress or LoadBalancer),
+#        egress to Kafka only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "obs.fullname" . }}-ingestor
+  namespace: {{ .Values.global.namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app: ingestor
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - ports:
+        - port: {{ .Values.ingestor.service.httpPort }}
+          protocol: TCP
+  egress:
+    # Kafka
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: kafka
+      ports:
+        - port: 9092
+          protocol: TCP
+    # DNS
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+---
+# ── Processor Network Policy ────────────────────────────────
+# Allow: no ingress except metrics scrape,
+#        egress to Kafka and ClickHouse only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "obs.fullname" . }}-processor
+  namespace: {{ .Values.global.namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app: processor
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - ports:
+        - port: {{ .Values.processor.service.metricsPort }}
+          protocol: TCP
+  egress:
+    # Kafka
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: kafka
+      ports:
+        - port: 9092
+          protocol: TCP
+    # ClickHouse
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: clickhouse
+      ports:
+        - port: 8123
+          protocol: TCP
+        - port: 9000
+          protocol: TCP
+    # DNS
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+{{- end }}

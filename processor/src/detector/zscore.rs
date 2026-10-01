@@ -75,11 +75,6 @@ impl ZScoreDetector {
 
         (z_score > self.threshold, z_score)
     }
-
-    /// Get the current window size.
-    pub fn current_window_size(&self) -> usize {
-        self.window.len()
-    }
 }
 
 impl AnomalyDetector for ZScoreDetector {
@@ -102,12 +97,6 @@ impl AnomalyDetector for ZScoreDetector {
 
     fn name(&self) -> &str {
         "zscore"
-    }
-
-    fn reset(&mut self) {
-        self.window.clear();
-        self.sum = 0.0;
-        self.sum_sq = 0.0;
     }
 }
 

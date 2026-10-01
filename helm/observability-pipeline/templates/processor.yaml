@@ -25,14 +25,35 @@ spec:
         prometheus.io/scrape: "true"
         prometheus.io/port: "{{ .Values.processor.service.metricsPort }}"
     spec:
+      securityContext:
+        {{- toYaml .Values.processor.podSecurityContext | nindent 8 }}
+      {{- with .Values.processor.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: processor
           image: "{{ .Values.global.imageRegistry }}{{ .Values.processor.image.repository }}:{{ .Values.processor.image.tag }}"
           imagePullPolicy: {{ .Values.processor.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.processor.containerSecurityContext | nindent 12 }}
           ports:
             - name: metrics
               containerPort: {{ .Values.processor.service.metricsPort }}
               protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
           env:
             - name: KAFKA_BOOTSTRAP_SERVERS
               value: {{ .Values.processor.config.kafkaBootstrapServers | quote }}
@@ -48,6 +69,16 @@ spec:
               value: {{ .Values.processor.config.consumerGroup | quote }}
             - name: CLICKHOUSE_URL
               value: {{ .Values.processor.config.clickhouseUrl | quote }}
+            - name: CLICKHOUSE_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.processor.config.clickhouseCredentialsSecret | quote }}
+                  key: username
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.processor.config.clickhouseCredentialsSecret | quote }}
+                  key: password
             - name: PROCESSOR_METRICS_PORT
               value: {{ .Values.processor.service.metricsPort | quote }}
             - name: PROCESSOR_BATCH_SIZE
@@ -60,8 +91,10 @@ spec:
               value: {{ .Values.processor.config.zscoreWindow | quote }}
             - name: PROCESSOR_ANOMALY_THRESHOLD
               value: {{ .Values.processor.config.anomalyThreshold | quote }}
-            - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: {{ .Values.processor.config.otelEndpoint | quote }}
+            - name: PROCESSOR_DETECTOR_CAPACITY
+              value: {{ .Values.processor.config.detectorCapacity | quote }}
+            - name: PROCESSOR_MAX_WRITE_ATTEMPTS
+              value: {{ .Values.processor.config.maxWriteAttempts | quote }}
           resources:
             {{- toYaml .Values.processor.resources | nindent 12 }}
 ---
@@ -116,4 +149,25 @@ spec:
   selector:
     matchLabels:
       app: processor
+{{- end }}
+---
+{{- if .Values.processor.kedaScaling.enabled }}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "obs.fullname" . }}-processor
+  namespace: {{ .Values.global.namespace }}
+spec:
+  scaleTargetRef:
+    name: {{ include "obs.fullname" . }}-processor
+  minReplicaCount: {{ .Values.processor.kedaScaling.minReplicas }}
+  maxReplicaCount: {{ .Values.processor.kedaScaling.maxReplicas }}
+  cooldownPeriod: 300
+  triggers:
+    - type: kafka
+      metadata:
+        bootstrapServers: {{ .Values.processor.config.kafkaBootstrapServers | quote }}
+        consumerGroup: {{ .Values.processor.config.consumerGroup | quote }}
+        topic: {{ .Values.processor.config.kafkaTopicRaw | quote }}
+        lagThreshold: {{ .Values.processor.kedaScaling.kafkaLagThreshold | quote }}
 {{- end }}

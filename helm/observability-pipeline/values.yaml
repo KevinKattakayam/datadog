@@ -1,5 +1,5 @@
 # ============================================================
-#  Helm Values — Enterprise Observability Pipeline
+#  Helm Values — Observability Pipeline v2
 #  Override these values for different environments
 # ============================================================
 
@@ -14,12 +14,11 @@ ingestor:
   replicaCount: 3
   image:
     repository: observability-pipeline/ingestor
-    tag: "1.0.0"
+    tag: "2.0.0"
     pullPolicy: IfNotPresent
   service:
     type: ClusterIP
     httpPort: 8080
-    grpcPort: 50051
     metricsPort: 8080
   resources:
     requests:
@@ -41,9 +40,20 @@ ingestor:
     flushIntervalMs: 100
     rateLimitRPS: 10000
     logLevel: info
-    redisUrl: redis-master:6379
-    schemaRegistryUrl: http://schema-registry:8081
-    otelEndpoint: http://otel-collector:4317
+    apiKeysPath: /etc/secrets/api-keys
+    drainDelaySeconds: 15
+  apiKeysSecret: observability-api-keys
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    fsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: ["ALL"]
   probes:
     liveness:
       path: /health
@@ -69,13 +79,20 @@ ingestor:
                   operator: In
                   values: [ingestor]
             topologyKey: kubernetes.io/hostname
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: DoNotSchedule
+      labelSelector:
+        matchLabels:
+          app: ingestor
 
 # ── Rust Processor ───────────────────────────────────────────
 processor:
   replicaCount: 3
   image:
     repository: observability-pipeline/processor
-    tag: "1.0.0"
+    tag: "2.0.0"
     pullPolicy: IfNotPresent
   service:
     type: ClusterIP
@@ -88,10 +105,21 @@ processor:
       cpu: "2"
       memory: 512Mi
   autoscaling:
-    enabled: true
+    # Kafka consumers should scale from lag via KEDA, not CPU. Disabled until
+    # the KEDA CRD/operator is installed in the target cluster.
+    enabled: false
     minReplicas: 3
-    maxReplicas: 12
+    # Must not exceed partition count: 6 partitions → max 6 consumers.
+    # Extra replicas sit idle but still consume cluster resources.
+    maxReplicas: 6
     targetCPUUtilization: 60
+  kedaScaling:
+    # KEDA-based scaling off Kafka consumer lag is strictly better than
+    # CPU-based HPA for a consumer that blocks on I/O, not computation.
+    enabled: false
+    minReplicas: 3
+    maxReplicas: 6
+    kafkaLagThreshold: "100"
   config:
     kafkaBootstrapServers: kafka:9092
     kafkaTopicRaw: metrics.raw
@@ -100,15 +128,35 @@ processor:
     kafkaTopicDlq: metrics.dlq
     consumerGroup: processor-group
     clickhouseUrl: http://clickhouse:8123/observability
+    clickhouseCredentialsSecret: observability-clickhouse-processor
     batchSize: 1000
     flushIntervalMs: 500
     ewmaAlpha: "0.3"
     zscoreWindow: "300"
     anomalyThreshold: "3.0"
-    otelEndpoint: http://otel-collector:4317
+    detectorCapacity: "100000"
+    maxWriteAttempts: "5"
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    fsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: ["ALL"]
   podDisruptionBudget:
     enabled: true
     minAvailable: 2
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: DoNotSchedule
+      labelSelector:
+        matchLabels:
+          app: processor
 
 # ── Kafka (Bitnami subchart) ────────────────────────────────
 kafka:
@@ -155,24 +203,6 @@ clickhouse:
       cpu: "4"
       memory: 4Gi
 
-# ── Redis (Bitnami subchart) ────────────────────────────────
-redis:
-  enabled: true
-  architecture: standalone
-  auth:
-    enabled: false
-  master:
-    persistence:
-      enabled: true
-      size: 5Gi
-    resources:
-      requests:
-        cpu: 100m
-        memory: 128Mi
-      limits:
-        cpu: 500m
-        memory: 256Mi
-
 # ── Prometheus ───────────────────────────────────────────────
 prometheus:
   enabled: true
@@ -198,8 +228,9 @@ grafana:
   image:
     repository: grafana/grafana
     tag: "10.4.0"
+  # Use Kubernetes secret, not chart values
   adminUser: admin
-  adminPassword: admin
+  adminPasswordSecret: grafana-admin-secret
   plugins:
     - grafana-clickhouse-datasource
   resources:
@@ -240,20 +271,6 @@ jaeger:
     type: memory
     maxTraces: 50000
 
-# ── Schema Registry ─────────────────────────────────────────
-schemaRegistry:
-  enabled: true
-  image:
-    repository: confluentinc/cp-schema-registry
-    tag: "7.6.0"
-  resources:
-    requests:
-      cpu: 100m
-      memory: 256Mi
-    limits:
-      cpu: 500m
-      memory: 512Mi
-
 # ── OpenTelemetry Collector ──────────────────────────────────
 otelCollector:
   enabled: true
@@ -271,22 +288,9 @@ otelCollector:
 # ── AlertManager ─────────────────────────────────────────────
 alertmanager:
   enabled: true
-  slackWebhookUrl: ""
-  pagerdutyRoutingKey: ""
-
-# ── Kafka Connect ───────────────────────────────────────────
-kafkaConnect:
-  enabled: true
-  image:
-    repository: confluentinc/cp-kafka-connect
-    tag: "7.6.0"
-  resources:
-    requests:
-      cpu: 250m
-      memory: 512Mi
-    limits:
-      cpu: "1"
-      memory: 1Gi
+  # Credentials reference Kubernetes secrets, never chart values
+  slackWebhookSecret: alertmanager-slack-secret
+  pagerdutyRoutingKeySecret: alertmanager-pagerduty-secret
 
 # ── Network Policies ────────────────────────────────────────
 networkPolicies:

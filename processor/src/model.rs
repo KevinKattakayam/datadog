@@ -16,6 +16,8 @@ pub struct RawMetric {
     #[serde(alias = "ts")]
     pub timestamp: i64,
     pub host: String,
+    #[serde(default)]
+    pub tenant_id: Option<String>,
 }
 
 /// Processed metric with anomaly detection results.
@@ -27,6 +29,8 @@ pub struct ProcessedMetric {
     pub tags: HashMap<String, String>,
     pub timestamp: i64,
     pub host: String,
+    #[serde(default)]
+    pub tenant_id: Option<String>,
     pub anomaly_score: f64,
     pub is_anomaly: bool,
     pub detector_type: String,
@@ -38,6 +42,8 @@ pub struct Alert {
     pub timestamp: i64,
     pub metric_name: String,
     pub host: String,
+    #[serde(default)]
+    pub tenant_id: Option<String>,
     pub value: f64,
     pub anomaly_score: f64,
     pub detector_type: String,
@@ -53,12 +59,18 @@ pub enum AlertSeverity {
     Critical,
 }
 
+impl AlertSeverity {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AlertSeverity::Warning => "warning",
+            AlertSeverity::Critical => "critical",
+        }
+    }
+}
+
 impl std::fmt::Display for AlertSeverity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AlertSeverity::Warning => write!(f, "warning"),
-            AlertSeverity::Critical => write!(f, "critical"),
-        }
+        write!(f, "{}", self.as_str())
     }
 }
 
@@ -66,6 +78,7 @@ impl std::fmt::Display for AlertSeverity {
 #[derive(Debug, Clone, Serialize, clickhouse::Row)]
 pub struct MetricRow {
     pub ts: i64,
+    pub tenant_id: String,
     pub name: String,
     pub host: String,
     pub value: f64,
@@ -78,13 +91,13 @@ pub struct MetricRow {
 }
 
 impl MetricRow {
-    pub fn from_processed(m: &ProcessedMetric, partition: u16, offset: u64) -> Self {
-        let tags: Vec<(String, String)> = m.tags.iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
+    pub fn from_processed(m: &ProcessedMetric, partition: i32, offset: i64) -> Self {
+        let tags: Vec<(String, String)> =
+            m.tags.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
 
         MetricRow {
             ts: m.timestamp * 1000, // Convert to milliseconds for DateTime64(3)
+            tenant_id: m.tenant_id.clone().unwrap_or_else(|| "default".to_string()),
             name: m.name.clone(),
             host: m.host.clone(),
             value: m.value,
@@ -92,8 +105,8 @@ impl MetricRow {
             tags,
             anomaly_score: m.anomaly_score,
             is_anomaly: if m.is_anomaly { 1 } else { 0 },
-            kafka_partition: partition,
-            kafka_offset: offset,
+            kafka_partition: partition as u16,
+            kafka_offset: offset as u64,
         }
     }
 }
@@ -102,6 +115,7 @@ impl MetricRow {
 #[derive(Debug, Clone, Serialize, clickhouse::Row)]
 pub struct AlertRow {
     pub ts: i64,
+    pub tenant_id: String,
     pub metric_name: String,
     pub host: String,
     pub value: f64,
@@ -113,12 +127,12 @@ pub struct AlertRow {
 
 impl AlertRow {
     pub fn from_alert(a: &Alert) -> Self {
-        let tags: Vec<(String, String)> = a.tags.iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
+        let tags: Vec<(String, String)> =
+            a.tags.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
 
         AlertRow {
             ts: a.timestamp * 1000,
+            tenant_id: a.tenant_id.clone().unwrap_or_else(|| "default".to_string()),
             metric_name: a.metric_name.clone(),
             host: a.host.clone(),
             value: a.value,

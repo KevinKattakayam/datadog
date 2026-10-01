@@ -149,3 +149,30 @@ func TestTenantRateLimit_PerTenantIsolation(t *testing.T) {
 		t.Errorf("tenant-b first: expected 200, got %d", w.Code)
 	}
 }
+
+func TestTenantRateLimit_ConcurrentRace(t *testing.T) {
+	// 1000 concurrent goroutines testing race condition under go test -race
+	limiter := NewTenantRateLimiter(500, nil)
+
+	r := gin.New()
+	r.Use(TenantExtractor())
+	r.Use(TenantRateLimit(limiter))
+	r.GET("/test", func(c *gin.Context) {
+		c.String(http.StatusOK, "ok")
+	})
+
+	done := make(chan bool)
+	for i := 0; i < 1000; i++ {
+		go func() {
+			req := httptest.NewRequest("GET", "/test", nil)
+			req.Header.Set(TenantHeaderKey, "concurrent-tenant")
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+			done <- true
+		}()
+	}
+
+	for i := 0; i < 1000; i++ {
+		<-done
+	}
+}

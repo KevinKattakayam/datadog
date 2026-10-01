@@ -1,0 +1,68 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 }, "overrides": [] },
+      "gridPos": { "h": 5, "w": 8, "x": 0, "y": 0 },
+      "id": 1,
+      "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "targets": [{ "expr": "processor_detector_series_tracked / processor_detector_series_capacity", "legendFormat": "cache utilization", "refId": "A" }],
+      "title": "Detector cache utilization",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ops", "min": 0 }, "overrides": [] },
+      "gridPos": { "h": 5, "w": 8, "x": 8, "y": 0 },
+      "id": 2,
+      "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "targets": [{ "expr": "sum(rate(processor_detector_evictions_total[5m]))", "legendFormat": "evictions / second", "refId": "A" }],
+      "title": "Detector eviction rate",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "inspect": false } }, "overrides": [] },
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 5 },
+      "id": 3,
+      "options": { "showHeader": true, "sortBy": [{ "displayName": "estimated_payload_bytes", "desc": true }] },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+          "format": "table",
+          "queryType": "sql",
+          "rawSql": "SELECT tenant_id, name, uniqMerge(hosts) AS approx_hosts, uniqMerge(tag_combos) AS approx_tag_combinations, sumMerge(estimated_payload_bytes) AS estimated_payload_bytes FROM observability.cardinality_hourly WHERE hour >= now() - INTERVAL 24 HOUR GROUP BY tenant_id, name ORDER BY estimated_payload_bytes DESC LIMIT 50",
+          "refId": "A"
+        }
+      ],
+      "title": "Top metric series by tenant (24h estimate)",
+      "type": "table"
+    }
+  ],
+  "refresh": "1m",
+  "schemaVersion": 39,
+  "tags": ["observability", "cardinality"],
+  "templating": { "list": [] },
+  "time": { "from": "now-24h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Cardinality and Cost",
+  "uid": "cardinality-cost",
+  "version": 1
+}

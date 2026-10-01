@@ -3,17 +3,31 @@ package validator
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
 	"github.com/Kevinbastin/observability-pipeline/ingestor/internal/model"
 )
 
-// MaxTagKeys is the maximum number of tags allowed per metric.
-const MaxTagKeys = 20
+const (
+	// MaxTagKeys is the maximum number of tags allowed per metric.
+	MaxTagKeys = 20
 
-// MaxNameLength is the maximum length of a metric name.
-const MaxNameLength = 256
+	// MaxNameLength is the maximum length of a metric name.
+	MaxNameLength = 256
+
+	// MaxTagKeyLength is the maximum length of a tag key.
+	MaxTagKeyLength = 64
+
+	// MaxTagValueLength is the maximum length of a tag value.
+	// Unbounded tag values are how a single tenant turns a LowCardinality
+	// column into a full dictionary scan. request_id as a tag is the classic mistake.
+	MaxTagValueLength = 256
+
+	// MaxHostLength per RFC 1035.
+	MaxHostLength = 253
+)
 
 // ValidUnits are the accepted measurement units.
 var ValidUnits = map[string]bool{
@@ -47,6 +61,14 @@ func ValidateMetric(m *model.Metric) error {
 	if m.Host == "" {
 		return fmt.Errorf("host is required")
 	}
+	if len(m.Host) > MaxHostLength {
+		return fmt.Errorf("host exceeds max length of %d", MaxHostLength)
+	}
+
+	// Value must be finite (NaN and Inf poison downstream aggregations)
+	if math.IsNaN(m.Value) || math.IsInf(m.Value, 0) {
+		return fmt.Errorf("value must be finite, got %v", m.Value)
+	}
 
 	// Timestamp must be reasonable (within last 24h to 1 minute in the future)
 	now := time.Now().Unix()
@@ -62,6 +84,14 @@ func ValidateMetric(m *model.Metric) error {
 	// Tag count limit
 	if len(m.Tags) > MaxTagKeys {
 		return fmt.Errorf("too many tags: %d (max %d)", len(m.Tags), MaxTagKeys)
+	}
+
+	// Tag key/value length limits — prevents cardinality explosion from
+	// tags like request_id or full URLs
+	for k, v := range m.Tags {
+		if len(k) > MaxTagKeyLength || len(v) > MaxTagValueLength {
+			return fmt.Errorf("tag %q exceeds length limits (key max %d, value max %d)", k, MaxTagKeyLength, MaxTagValueLength)
+		}
 	}
 
 	return nil

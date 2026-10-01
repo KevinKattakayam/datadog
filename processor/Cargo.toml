@@ -1,8 +1,8 @@
 [package]
 name = "processor"
-version = "1.0.0"
+version = "2.0.0"
 edition = "2021"
-description = "Enterprise Observability Pipeline — Rust Kafka Consumer & Anomaly Detector"
+description = "Observability Pipeline — Rust Kafka Consumer & Anomaly Detector"
 
 [dependencies]
 # Kafka consumer
@@ -45,3 +45,9 @@ once_cell = "1"
 
 # Graceful shutdown
 tokio-util = "0.7"
+
+# LRU cache for bounded detector state
+lru = "0.12"
+
+# Fast random for jittered backoff
+fastrand = "2"

@@ -1,4 +1,5 @@
 pub mod ewma;
+pub mod registry;
 pub mod zscore;
 
 use crate::model::{AlertSeverity, RawMetric};
@@ -19,7 +20,4 @@ pub trait AnomalyDetector: Send + Sync {
 
     /// Get the detector type name.
     fn name(&self) -> &str;
-
-    /// Reset the detector state.
-    fn reset(&mut self);
 }

@@ -9,6 +9,7 @@ type Metric struct {
 	Tags      map[string]string `json:"tags,omitempty"`
 	Timestamp int64             `json:"timestamp" binding:"required"`
 	Host      string            `json:"host"      binding:"required"`
+	TenantID  string            `json:"tenant_id,omitempty"`
 }
 
 // BatchRequest represents a batch of metrics submitted in a single request.
@@ -20,6 +21,8 @@ type BatchRequest struct {
 type IngestResponse struct {
 	Status   string `json:"status"`
 	Accepted int    `json:"accepted"`
+	Rejected int    `json:"rejected,omitempty"`
+	Skipped  int    `json:"skipped,omitempty"`
 	Message  string `json:"message,omitempty"`
 }
 

@@ -1,15 +1,14 @@
 // ClickHouse batch writer for processed metrics and alerts.
 //
 // Uses the clickhouse-rs crate for native protocol communication.
-// Implements batched inserts with configurable batch size and flush interval.
 // Circuit breaker pattern prevents cascading failures when ClickHouse is degraded.
+// Writer now returns Result and never clears data on failure — ownership stays
+// with the caller, which is the only thing that can decide not to commit.
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use clickhouse::Client;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
-use tokio::time;
 use tracing::{error, info, warn};
 
 use crate::model::{AlertRow, MetricRow};
@@ -116,25 +115,23 @@ impl CircuitBreaker {
             .store(now_epoch_ms(), Ordering::SeqCst);
 
         match self.state.load(Ordering::SeqCst) {
-            CB_CLOSED => {
-                if count >= self.failure_threshold {
-                    // Trip the circuit
-                    self.state.store(CB_OPEN, Ordering::SeqCst);
-                    let backoff = self.open_duration_ms.load(Ordering::SeqCst);
-                    warn!(
-                        failures = count,
-                        backoff_ms = backoff,
-                        "Circuit breaker: CLOSED → OPEN"
-                    );
-                }
+            CB_CLOSED if count >= self.failure_threshold => {
+                // Trip the circuit
+                self.state.store(CB_OPEN, Ordering::SeqCst);
+                let backoff = self.open_duration_ms.load(Ordering::SeqCst);
+                warn!(
+                    failures = count,
+                    backoff_ms = backoff,
+                    "Circuit breaker: CLOSED → OPEN"
+                );
             }
+            CB_CLOSED => {}
             CB_HALF_OPEN => {
                 // Probe failed — go back to open with exponential backoff
                 self.state.store(CB_OPEN, Ordering::SeqCst);
                 let current = self.open_duration_ms.load(Ordering::SeqCst);
                 let new_backoff = (current * 2).min(self.max_backoff_ms);
-                self.open_duration_ms
-                    .store(new_backoff, Ordering::SeqCst);
+                self.open_duration_ms.store(new_backoff, Ordering::SeqCst);
                 warn!(
                     backoff_ms = new_backoff,
                     "Circuit breaker: HALF_OPEN → OPEN (exponential backoff)"
@@ -164,156 +161,146 @@ fn now_epoch_ms() -> u64 {
 
 // ── ClickHouse Writer ────────────────────────────────────────
 
-/// ClickHouse writer that batches inserts with circuit breaker protection.
+/// ClickHouse writer with circuit breaker protection and retry with backoff.
+/// Never drops data. Returns Err only when every attempt failed, in
+/// which case the caller MUST NOT commit the offsets.
 pub struct ClickHouseWriter {
     client: Client,
-    batch_size: usize,
-    flush_interval: Duration,
     circuit_breaker: CircuitBreaker,
+    max_attempts: u32,
+    base_retry_ms: u64,
 }
 
 impl ClickHouseWriter {
     /// Create a new ClickHouse writer with circuit breaker.
-    pub fn new(url: &str, batch_size: usize, flush_interval_ms: u64) -> Result<Self> {
+    pub fn new(
+        url: &str,
+        database: &str,
+        username: &str,
+        password: &str,
+        max_attempts: u32,
+    ) -> Result<Self> {
         let client = Client::default()
             .with_url(url)
-            .with_database("observability");
+            .with_database(database)
+            .with_user(username)
+            .with_password(password);
 
         let circuit_breaker = CircuitBreaker::new(
             5,      // 5 consecutive failures → open
             3,      // 3 successes in half-open → close
-            1000,   // 1s initial backoff
+            1_000,  // 1s initial backoff
             60_000, // 60s max backoff
         );
 
-        info!(url = url, batch_size = batch_size, "ClickHouse writer initialized with circuit breaker");
+        info!(
+            url = url,
+            database = database,
+            "ClickHouse writer initialized with circuit breaker"
+        );
 
         Ok(ClickHouseWriter {
             client,
-            batch_size,
-            flush_interval: Duration::from_millis(flush_interval_ms),
             circuit_breaker,
+            max_attempts,
+            base_retry_ms: 200,
         })
     }
 
-    /// Start the metric writer loop. Receives metrics via channel and batch-inserts them.
-    pub async fn run_metric_writer(
-        &self,
-        mut rx: mpsc::Receiver<MetricRow>,
-    ) {
-        let mut batch: Vec<MetricRow> = Vec::with_capacity(self.batch_size);
-        let mut interval = time::interval(self.flush_interval);
+    /// Persist rows, retrying with exponential backoff and jitter.
+    /// Never drops data. Returns Err only when every attempt failed, in
+    /// which case the caller MUST NOT commit the offsets.
+    pub async fn write_metrics(&self, rows: &[MetricRow]) -> Result<()> {
+        let mut attempt = 0u32;
 
         loop {
-            tokio::select! {
-                Some(row) = rx.recv() => {
-                    batch.push(row);
-                    if batch.len() >= self.batch_size {
-                        self.flush_metrics(&mut batch).await;
-                    }
+            attempt += 1;
+
+            if !self.circuit_breaker.allow() {
+                // Open circuit: do not delete, do not hammer. Sleep and let
+                // the consumer stall. Kafka is the buffer; lag is the signal.
+                crate::metrics::CIRCUIT_STATE.set(1.0);
+                warn!(rows = rows.len(), "circuit open — pausing consumer");
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                if attempt >= self.max_attempts {
+                    return Err(anyhow!("circuit open after {attempt} attempts"));
                 }
-                _ = interval.tick() => {
-                    if !batch.is_empty() {
-                        self.flush_metrics(&mut batch).await;
+                continue;
+            }
+
+            let started = Instant::now();
+            match self.insert_metrics(rows).await {
+                Ok(()) => {
+                    self.circuit_breaker.record_success();
+                    crate::metrics::CIRCUIT_STATE.set(0.0);
+                    crate::metrics::CLICKHOUSE_WRITE_DURATION
+                        .observe(started.elapsed().as_secs_f64());
+                    crate::metrics::CLICKHOUSE_BATCH_SIZE.set(rows.len() as f64);
+                    info!(rows = rows.len(), attempt, "flushed to clickhouse");
+                    return Ok(());
+                }
+                Err(e) => {
+                    self.circuit_breaker.record_failure();
+                    crate::metrics::CLICKHOUSE_WRITE_ERRORS.inc();
+
+                    if attempt >= self.max_attempts {
+                        error!(
+                            error = %e,
+                            rows = rows.len(),
+                            attempt,
+                            "write failed permanently — offsets NOT committed"
+                        );
+                        return Err(e);
                     }
+
+                    // Exponential backoff with full jitter.
+                    let ceiling = self.base_retry_ms.saturating_mul(1u64 << attempt.min(6));
+                    let delay = fastrand::u64(0..=ceiling.max(1));
+                    warn!(error = %e, attempt, delay_ms = delay, "write failed — retrying");
+                    tokio::time::sleep(Duration::from_millis(delay)).await;
                 }
             }
         }
     }
 
-    /// Start the alert writer loop.
-    pub async fn run_alert_writer(
-        &self,
-        mut rx: mpsc::Receiver<AlertRow>,
-    ) {
-        let mut batch: Vec<AlertRow> = Vec::with_capacity(100);
-        let mut interval = time::interval(self.flush_interval);
+    /// Write alert rows with the same retry semantics.
+    pub async fn write_alerts(&self, rows: &[AlertRow]) -> Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let mut attempt = 0u32;
 
         loop {
-            tokio::select! {
-                Some(row) = rx.recv() => {
-                    batch.push(row);
-                    if batch.len() >= 100 {
-                        self.flush_alerts(&mut batch).await;
-                    }
+            attempt += 1;
+            if !self.circuit_breaker.allow() {
+                crate::metrics::CIRCUIT_STATE.set(1.0);
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                if attempt >= self.max_attempts {
+                    return Err(anyhow!("circuit open after {attempt} attempts for alerts"));
                 }
-                _ = interval.tick() => {
-                    if !batch.is_empty() {
-                        self.flush_alerts(&mut batch).await;
+                continue;
+            }
+
+            match self.insert_alerts(rows).await {
+                Ok(()) => {
+                    self.circuit_breaker.record_success();
+                    crate::metrics::CIRCUIT_STATE.set(0.0);
+                    info!(count = rows.len(), "flushed alerts to ClickHouse");
+                    return Ok(());
+                }
+                Err(e) => {
+                    self.circuit_breaker.record_failure();
+                    if attempt >= self.max_attempts {
+                        error!(error = %e, "alert write failed permanently");
+                        return Err(e);
                     }
+                    let ceiling = self.base_retry_ms.saturating_mul(1u64 << attempt.min(6));
+                    let delay = fastrand::u64(0..=ceiling.max(1));
+                    warn!(error = %e, attempt, delay_ms = delay, "alert write failed — retrying");
+                    tokio::time::sleep(Duration::from_millis(delay)).await;
                 }
             }
         }
-    }
-
-    /// Flush a batch of metric rows to ClickHouse (with circuit breaker).
-    async fn flush_metrics(&self, batch: &mut Vec<MetricRow>) {
-        let count = batch.len();
-
-        // Circuit breaker check
-        if !self.circuit_breaker.allow() {
-            warn!(
-                count = count,
-                state = self.circuit_breaker.state_name(),
-                "Circuit breaker OPEN — dropping metric batch"
-            );
-            crate::metrics::CLICKHOUSE_WRITE_ERRORS.inc();
-            batch.clear();
-            return;
-        }
-
-        let start = Instant::now();
-
-        match self.insert_metrics(batch).await {
-            Ok(_) => {
-                let elapsed = start.elapsed();
-                self.circuit_breaker.record_success();
-                info!(
-                    count = count,
-                    duration_ms = elapsed.as_millis(),
-                    cb_state = self.circuit_breaker.state_name(),
-                    "Flushed metrics to ClickHouse"
-                );
-                crate::metrics::CLICKHOUSE_WRITE_DURATION
-                    .observe(elapsed.as_secs_f64());
-                crate::metrics::CLICKHOUSE_BATCH_SIZE.set(count as f64);
-            }
-            Err(e) => {
-                self.circuit_breaker.record_failure();
-                error!(
-                    error = %e,
-                    count = count,
-                    cb_state = self.circuit_breaker.state_name(),
-                    "Failed to flush metrics to ClickHouse"
-                );
-                crate::metrics::CLICKHOUSE_WRITE_ERRORS.inc();
-            }
-        }
-
-        batch.clear();
-    }
-
-    /// Flush a batch of alert rows to ClickHouse (with circuit breaker).
-    async fn flush_alerts(&self, batch: &mut Vec<AlertRow>) {
-        let count = batch.len();
-
-        if !self.circuit_breaker.allow() {
-            warn!(count = count, "Circuit breaker OPEN — dropping alert batch");
-            batch.clear();
-            return;
-        }
-
-        match self.insert_alerts(batch).await {
-            Ok(_) => {
-                self.circuit_breaker.record_success();
-                info!(count = count, "Flushed alerts to ClickHouse");
-            }
-            Err(e) => {
-                self.circuit_breaker.record_failure();
-                error!(error = %e, count = count, "Failed to flush alerts to ClickHouse");
-            }
-        }
-        batch.clear();
     }
 
     /// Insert metric rows using ClickHouse inserter.
@@ -336,13 +323,18 @@ impl ClickHouseWriter {
         Ok(())
     }
 
-    /// Check if ClickHouse is reachable.
+    /// True readiness: can we reach the table we actually write to?
     pub async fn health_check(&self) -> bool {
         self.client
-            .query("SELECT 1")
+            .query("SELECT 1 FROM metrics LIMIT 0")
             .execute()
             .await
             .is_ok()
+    }
+
+    /// Get the current circuit breaker state name.
+    pub fn circuit_state(&self) -> &'static str {
+        self.circuit_breaker.state_name()
     }
 }
 
@@ -418,9 +410,5 @@ mod tests {
         // Failure in half-open → back to open with increased backoff
         cb.record_failure();
         assert_eq!(cb.state_name(), "open");
-
-        // Backoff should have doubled from 0 (min is 0*2 = 0)
-        // But with real base, it would be 2000ms
     }
 }
-

@@ -1,7 +1,7 @@
 # ============================================================
 #  Grafana Datasource Provisioning
 #  Prometheus (real-time) + ClickHouse (historical) +
-#  Tempo (traces) + Jaeger (traces) + Redis (cache)
+#  Tempo (traces) + Jaeger (traces)
 # ============================================================
 
 apiVersion: 1
@@ -12,6 +12,7 @@ datasources:
   # ── Prometheus (primary real-time metrics) ──────────────────
   - name: Prometheus
     type: prometheus
+    uid: prometheus
     access: proxy
     url: http://prometheus:9090
     isDefault: true
@@ -26,6 +27,7 @@ datasources:
   # ── ClickHouse (long-term historical storage) ──────────────
   - name: ClickHouse
     type: grafana-clickhouse-datasource
+    uid: clickhouse
     access: proxy
     editable: false
     jsonData:
@@ -33,8 +35,10 @@ datasources:
       port: 9000
       protocol: native
       defaultDatabase: observability
-      username: default
+      username: grafana_ro
       tlsSkipVerify: true
+    secureJsonData:
+      password: ${CLICKHOUSE_GRAFANA_PASSWORD}
 
   # ── Grafana Tempo (distributed trace storage) ──────────────
   - name: Tempo
@@ -63,12 +67,3 @@ datasources:
     url: http://jaeger:16686
     editable: false
     uid: jaeger
-
-  # ── Redis (cache metrics) ───────────────────────────────────
-  - name: Redis
-    type: redis-datasource
-    access: proxy
-    url: redis://redis:6379
-    editable: false
-    jsonData:
-      client: standalone

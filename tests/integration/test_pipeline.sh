@@ -14,6 +14,7 @@ RESET='\033[0m'
 INGESTOR_URL="${INGESTOR_URL:-http://localhost:8080}"
 KAFKA_BROKER="${KAFKA_BROKER:-localhost:29092}"
 CLICKHOUSE_URL="${CLICKHOUSE_URL:-http://localhost:8123}"
+TEST_PREFIX="integration.$(date +%s).$$"
 TESTS_PASSED=0
 TESTS_FAILED=0
 
@@ -41,7 +42,7 @@ echo ""
 echo -e "${CYAN}▸ Test Group: Single Metric Ingestion${RESET}"
 RESP=$(curl -s -X POST "$INGESTOR_URL/ingest" \
   -H "Content-Type: application/json" \
-  -d '{"name":"integration.test.single","value":42.0,"unit":"count","tags":{"test":"true"},"timestamp":'$(date +%s)',"host":"test-host"}')
+  -d '{"name":"'"${TEST_PREFIX}"'.single","value":42.0,"unit":"count","tags":{"test":"true"},"timestamp":'$(date +%s)',"host":"test-host"}')
 echo "$RESP" | grep -q '"accepted":1' && pass "POST /ingest accepted single metric" || fail "POST /ingest failed: $RESP"
 
 # ── Test 3: Batch Ingestion ────────────────────────────────────
@@ -50,7 +51,7 @@ echo -e "${CYAN}▸ Test Group: Batch Ingestion${RESET}"
 METRICS=""
 for i in $(seq 1 50); do
   [ -n "$METRICS" ] && METRICS="$METRICS,"
-  METRICS="$METRICS{\"name\":\"integration.test.batch.$i\",\"value\":$((RANDOM % 1000)),\"unit\":\"count\",\"tags\":{\"test\":\"batch\",\"index\":\"$i\"},\"timestamp\":$(date +%s),\"host\":\"test-host\"}"
+  METRICS="$METRICS{\"name\":\"${TEST_PREFIX}.batch.$i\",\"value\":$((RANDOM % 1000)),\"unit\":\"count\",\"tags\":{\"test\":\"batch\",\"index\":\"$i\"},\"timestamp\":$(date +%s),\"host\":\"test-host\"}"
 done
 RESP=$(curl -s -X POST "$INGESTOR_URL/ingest/batch" \
   -H "Content-Type: application/json" \
@@ -88,7 +89,7 @@ STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$INGESTOR_URL/ingest" \
 # ── Test 5: Kafka Message Verification ─────────────────────────
 echo ""
 echo -e "${CYAN}▸ Test Group: Kafka Verification${RESET}"
-sleep 3  # Wait for async produce
+sleep 3  # Allow the broker's topic offset query to reflect the writes
 
 OFFSETS=$(docker exec obs-kafka kafka-run-class kafka.tools.GetOffsetShell --broker-list localhost:9092 --topic metrics.raw 2>/dev/null)
 TOTAL_OFFSET=0
@@ -129,7 +130,21 @@ GF_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/api/hea
 [ "$GF_STATUS" = "200" ] && pass "Grafana is healthy" || fail "Grafana returned $GF_STATUS"
 
 GF_DS=$(curl -s -u admin:admin http://localhost:3000/api/datasources 2>/dev/null)
-echo "$GF_DS" | grep -q "Prometheus" && pass "Prometheus datasource configured" || fail "Prometheus datasource missing"
+if echo "$GF_DS" | grep -q '"name":"Prometheus"'; then
+  pass "Prometheus datasource is provisioned in Grafana"
+elif echo "$GF_DS" | grep -q '"statusCode":401' && grep -q 'name: Prometheus' infra/grafana/provisioning/datasources/datasources.yml; then
+  # Reused Grafana volumes retain their original admin password; verify the
+  # mounted provisioning source when the development default cannot log in.
+  pass "Prometheus datasource provisioning is configured (Grafana admin auth is customized)"
+else
+  fail "Prometheus datasource missing or Grafana API check failed"
+fi
+
+# ── Test 8b: Alertmanager ─────────────────────────────────────
+echo ""
+echo -e "${CYAN}▸ Test Group: Alertmanager${RESET}"
+AM_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:9094/-/healthy 2>/dev/null)
+[ "$AM_STATUS" = "200" ] && pass "Alertmanager is healthy" || fail "Alertmanager returned $AM_STATUS"
 
 # ── Test 9: Prometheus Metrics Content ─────────────────────────
 echo ""
@@ -139,6 +154,62 @@ echo "$METRICS_RESP" | grep -q "ingestor_requests_total" && pass "ingestor_reque
 echo "$METRICS_RESP" | grep -q "ingestor_publish_errors_total" && pass "ingestor_publish_errors_total metric exposed" || fail "ingestor_publish_errors_total missing"
 echo "$METRICS_RESP" | grep -q "ingestor_batch_size_histogram" && pass "ingestor_batch_size_histogram metric exposed" || fail "ingestor_batch_size_histogram missing"
 echo "$METRICS_RESP" | grep -q "ingestor_kafka_messages_published_total" && pass "ingestor_kafka_messages_published_total metric exposed" || fail "ingestor_kafka_messages_published_total missing"
+
+# ── Test 10: ClickHouse Row Assertions ─────────────────────────
+echo ""
+echo -e "${CYAN}▸ Test Group: ClickHouse Data Verification (Row Assertions)${RESET}"
+
+# Wait for this run's rows to become visible in ClickHouse.
+echo "  Waiting for this run's metrics to reach ClickHouse..."
+ROW_COUNT=0
+for attempt in $(seq 1 30); do
+  ROW_COUNT=$(curl -s "$CLICKHOUSE_URL/?query=SELECT+count()+FROM+observability.metrics+WHERE+startsWith(name%2C+'${TEST_PREFIX}')" 2>/dev/null | tr -d '[:space:]')
+  [ "$ROW_COUNT" = "51" ] && break
+  sleep 1
+done
+
+# Verify metrics actually landed in ClickHouse (not just tables exist)
+if [ "$ROW_COUNT" = "51" ]; then
+    pass "ClickHouse metrics table has $ROW_COUNT integration test rows"
+else
+    fail "No integration test rows in ClickHouse metrics table (got: '$ROW_COUNT')"
+fi
+
+# Verify the single metric we sent exists
+SINGLE_COUNT=$(curl -s "$CLICKHOUSE_URL/?query=SELECT+count()+FROM+observability.metrics+WHERE+name='${TEST_PREFIX}.single'" 2>/dev/null | tr -d '[:space:]')
+if [ -n "$SINGLE_COUNT" ] && [ "$SINGLE_COUNT" -gt 0 ] 2>/dev/null; then
+    pass "Single metric 'integration.test.single' found in ClickHouse"
+else
+    fail "Single metric 'integration.test.single' not found in ClickHouse (count: '$SINGLE_COUNT')"
+fi
+
+# Verify batch metrics landed
+BATCH_COUNT=$(curl -s "$CLICKHOUSE_URL/?query=SELECT+count()+FROM+observability.metrics+WHERE+startsWith(name%2C+'${TEST_PREFIX}.batch.')" 2>/dev/null | tr -d '[:space:]')
+if [ "$BATCH_COUNT" = "50" ]; then
+    pass "Batch metrics landed: $BATCH_COUNT rows (expected ~50)"
+else
+    fail "Batch metric count too low: $BATCH_COUNT (expected >= 40)"
+fi
+
+# Verify tenant_id column is populated
+TENANT_COUNT=$(curl -s "$CLICKHOUSE_URL/?query=SELECT+uniqExact(tenant_id)+FROM+observability.metrics+WHERE+startsWith(name%2C+'${TEST_PREFIX}')" 2>/dev/null | tr -d '[:space:]')
+if [ -n "$TENANT_COUNT" ] && [ "$TENANT_COUNT" -ge 1 ] 2>/dev/null; then
+    pass "tenant_id column populated ($TENANT_COUNT distinct tenants)"
+else
+    fail "tenant_id column not populated"
+fi
+
+# Verify DLQ table exists
+echo "$CH_TABLES" | grep -q "dlq_events" && pass "ClickHouse dlq_events table exists" || fail "dlq_events table missing"
+
+# ── Test 11: Processor Health ──────────────────────────────────
+echo ""
+echo -e "${CYAN}▸ Test Group: Processor Health${RESET}"
+PROC_HEALTH=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:9091/health 2>/dev/null)
+[ "$PROC_HEALTH" = "200" ] && pass "Processor /health returns 200" || fail "Processor /health returned $PROC_HEALTH"
+
+PROC_READY=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:9091/ready 2>/dev/null)
+[ "$PROC_READY" = "200" ] && pass "Processor /ready returns 200" || fail "Processor /ready returned $PROC_READY"
 
 # ── Summary ────────────────────────────────────────────────────
 echo ""

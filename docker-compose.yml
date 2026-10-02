@@ -56,7 +56,6 @@ services:
       "
       echo 'Creating Kafka topics...'
       kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic metrics.raw --partitions 6 --replication-factor 1
-      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic metrics.processed --partitions 6 --replication-factor 1
       kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic alerts.fired --partitions 3 --replication-factor 1
       kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic metrics.dlq --partitions 3 --replication-factor 1 --config retention.ms=604800000
       echo 'Topics created successfully.'
@@ -248,7 +247,6 @@ services:
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       KAFKA_TOPIC_RAW: metrics.raw
-      KAFKA_TOPIC_PROCESSED: metrics.processed
       KAFKA_TOPIC_ALERTS: alerts.fired
       KAFKA_TOPIC_DLQ: metrics.dlq
       # Keep stale records on reused local volumes out of smoke-test runs.

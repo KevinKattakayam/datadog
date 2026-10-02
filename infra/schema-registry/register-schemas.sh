@@ -19,12 +19,6 @@ curl -sf -X POST "$SCHEMA_REGISTRY_URL/subjects/metrics.raw-value/versions" \
   -H "Content-Type: application/vnd.schemaregistry.v1+json" \
   -d "{\"schemaType\": \"AVRO\", \"schema\": $METRIC_SCHEMA}" && echo ""
 
-# Register metric schema for metrics.processed topic
-echo "Registering processed metric schema..."
-curl -sf -X POST "$SCHEMA_REGISTRY_URL/subjects/metrics.processed-value/versions" \
-  -H "Content-Type: application/vnd.schemaregistry.v1+json" \
-  -d "{\"schemaType\": \"AVRO\", \"schema\": $METRIC_SCHEMA}" && echo ""
-
 # Register alert schema for alerts.fired topic
 echo "Registering alert schema..."
 ALERT_SCHEMA=$(cat /etc/schema-registry/schemas/alert.avsc | python3 -c "import sys,json; print(json.dumps(json.dumps(json.load(sys.stdin))))")

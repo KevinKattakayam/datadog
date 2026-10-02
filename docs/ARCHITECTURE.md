@@ -68,7 +68,7 @@ Kafka produce acknowledgements and processor offset commits are used as durabili
 | `src/model.rs` | MetricRow, AlertRow, data types |
 | `src/config.rs` | Env-var configuration |
 | `src/metrics.rs` | Prometheus metric definitions |
-| `src/producer.rs` | Alert/processed fan-out producer |
+| `src/producer.rs` | Alert fan-out producer |
 
 ### ClickHouse Schema (`infra/clickhouse/schema.sql`)
 
@@ -83,7 +83,6 @@ Kafka produce acknowledgements and processor offset commits are used as durabili
 | Topic | Partitions | Purpose |
 |-------|-----------|---------|
 | `metrics.raw` | 6 | Ingestor → Processor |
-| `metrics.processed` | 6 | Fan-out of processed metrics |
 | `alerts.fired` | 3 | Anomaly alerts |
 | `metrics.dlq` | 3 | Dead-letter queue (7-day retention) |
 

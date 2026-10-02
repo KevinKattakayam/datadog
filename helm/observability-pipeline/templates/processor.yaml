@@ -59,8 +59,6 @@ spec:
               value: {{ .Values.processor.config.kafkaBootstrapServers | quote }}
             - name: KAFKA_TOPIC_RAW
               value: {{ .Values.processor.config.kafkaTopicRaw | quote }}
-            - name: KAFKA_TOPIC_PROCESSED
-              value: {{ .Values.processor.config.kafkaTopicProcessed | quote }}
             - name: KAFKA_TOPIC_ALERTS
               value: {{ .Values.processor.config.kafkaTopicAlerts | quote }}
             - name: KAFKA_TOPIC_DLQ

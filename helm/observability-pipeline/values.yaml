@@ -123,7 +123,6 @@ processor:
   config:
     kafkaBootstrapServers: kafka:9092
     kafkaTopicRaw: metrics.raw
-    kafkaTopicProcessed: metrics.processed
     kafkaTopicAlerts: alerts.fired
     kafkaTopicDlq: metrics.dlq
     consumerGroup: processor-group

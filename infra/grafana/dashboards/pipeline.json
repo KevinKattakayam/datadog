@@ -175,8 +175,7 @@
       "title": "Kafka Messages In/Out (per sec)",
       "type": "timeseries",
       "targets": [
-        { "expr": "sum(rate(kafka_topic_partition_current_offset{topic=\"metrics.raw\"}[1m]))", "legendFormat": "metrics.raw in" },
-        { "expr": "sum(rate(kafka_topic_partition_current_offset{topic=\"metrics.processed\"}[1m]))", "legendFormat": "metrics.processed out" }
+        { "expr": "sum(rate(kafka_topic_partition_current_offset{topic=\"metrics.raw\"}[1m]))", "legendFormat": "metrics.raw in" }
       ]
     },
     {

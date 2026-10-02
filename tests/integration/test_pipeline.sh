@@ -103,7 +103,6 @@ done <<< "$OFFSETS"
 # Check all 4 topics exist
 TOPICS=$(docker exec obs-kafka kafka-topics --bootstrap-server localhost:9092 --list 2>/dev/null)
 echo "$TOPICS" | grep -q "metrics.raw" && pass "Topic metrics.raw exists" || fail "Topic metrics.raw missing"
-echo "$TOPICS" | grep -q "metrics.processed" && pass "Topic metrics.processed exists" || fail "Topic metrics.processed missing"
 echo "$TOPICS" | grep -q "alerts.fired" && pass "Topic alerts.fired exists" || fail "Topic alerts.fired missing"
 echo "$TOPICS" | grep -q "metrics.dlq" && pass "Topic metrics.dlq exists" || fail "Topic metrics.dlq missing"
 

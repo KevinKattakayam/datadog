@@ -7,7 +7,6 @@ pub struct Config {
     // Kafka
     pub kafka_brokers: String,
     pub kafka_topic_raw: String,
-    pub kafka_topic_processed: String,
     pub kafka_topic_alerts: String,
     pub kafka_topic_dlq: String,
     pub kafka_consumer_group: String,
@@ -49,7 +48,6 @@ impl Config {
         Config {
             kafka_brokers: env_or("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"),
             kafka_topic_raw: env_or("KAFKA_TOPIC_RAW", "metrics.raw"),
-            kafka_topic_processed: env_or("KAFKA_TOPIC_PROCESSED", "metrics.processed"),
             kafka_topic_alerts: env_or("KAFKA_TOPIC_ALERTS", "alerts.fired"),
             kafka_topic_dlq: env_or("KAFKA_TOPIC_DLQ", "metrics.dlq"),
             kafka_consumer_group: env_or("KAFKA_CONSUMER_GROUP", "processor-group"),

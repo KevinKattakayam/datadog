@@ -31,8 +31,6 @@ spec:
               value: "kafka-0.kafka-headless.observability.svc.cluster.local:9092,kafka-1.kafka-headless.observability.svc.cluster.local:9092,kafka-2.kafka-headless.observability.svc.cluster.local:9092"
             - name: KAFKA_TOPIC_RAW
               value: "metrics.raw"
-            - name: KAFKA_TOPIC_PROCESSED
-              value: "metrics.processed"
             - name: KAFKA_TOPIC_ALERTS
               value: "alerts.fired"
             - name: KAFKA_CONSUMER_GROUP

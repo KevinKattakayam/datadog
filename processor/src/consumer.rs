@@ -219,13 +219,6 @@ impl ConsumerLoop {
             detector_type: verdict.detector_type.clone(),
         };
 
-        // Fan-out topics are advisory. A failure here must not block the
-        // durable path, but it must be visible.
-        if let Err(e) = self.alerts.publish_processed(&processed).await {
-            warn!(error = %e, "processed fan-out failed");
-            crate::metrics::FANOUT_ERRORS.inc();
-        }
-
         let mut alert_row = None;
         if verdict.is_anomaly {
             crate::metrics::ANOMALIES_DETECTED

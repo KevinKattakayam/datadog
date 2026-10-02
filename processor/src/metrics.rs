@@ -94,7 +94,7 @@ pub static CIRCUIT_STATE: Lazy<Gauge> = Lazy::new(|| {
 pub static FANOUT_ERRORS: Lazy<Counter> = Lazy::new(|| {
     register_counter!(
         "processor_fanout_errors_total",
-        "Total errors publishing to fan-out topics (processed, alerts)"
+        "Total errors publishing anomaly alerts"
     )
     .unwrap()
 });

@@ -31,14 +31,13 @@ For an authenticated local request, put one line per key in a file using `sha256
 
 ```text
 HTTP client → Go ingestor → metrics.raw (Kafka) → Rust processor → ClickHouse
-                                                  ├→ metrics.processed
                                                   ├→ alerts.fired
                                                   └→ metrics.dlq
 ```
 
 The ingestor validates and synchronously produces records with `acks=all`; it returns success only after Kafka acknowledges the record. The processor batches by source partition, persists the metric rows, and then synchronously commits the covered offsets. Failed ClickHouse writes leave offsets uncommitted for replay. A failed flush pauses further consumption so the in-memory batch stays bounded while Kafka retains the backlog.
 
-The processor also publishes processed metrics and anomaly alerts to Kafka as advisory fan-out. ClickHouse is the durability gate for source offsets. A crash after a ClickHouse insert and before the offset commit can replay rows; queries over raw `ReplacingMergeTree` data should use `FINAL` or duplicate-safe aggregation. Rollups are aggregated ClickHouse views.
+The processor publishes anomaly alerts to Kafka as advisory fan-out. ClickHouse is the durability gate for source offsets. A crash after a ClickHouse insert and before the offset commit can replay rows; queries over raw `ReplacingMergeTree` data should use `FINAL` or duplicate-safe aggregation. Rollups are aggregated ClickHouse views.
 
 ## HTTP API
 

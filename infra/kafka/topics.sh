@@ -27,13 +27,6 @@ kafka-topics --bootstrap-server "$BOOTSTRAP" \
 
 kafka-topics --bootstrap-server "$BOOTSTRAP" \
   --create --if-not-exists \
-  --topic metrics.processed \
-  --partitions 6 \
-  --replication-factor "$RF" \
-  --config min.insync.replicas="$MIN_ISR"
-
-kafka-topics --bootstrap-server "$BOOTSTRAP" \
-  --create --if-not-exists \
   --topic alerts.fired \
   --partitions 3 \
   --replication-factor "$RF" \

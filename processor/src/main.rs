@@ -76,7 +76,6 @@ async fn main() -> Result<()> {
     let alert_producer = Arc::new(AlertProducer::new(
         &config.kafka_brokers,
         &config.kafka_topic_alerts,
-        &config.kafka_topic_processed,
     )?);
 
     // Initialize DLQ producer

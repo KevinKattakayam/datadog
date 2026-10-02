@@ -15,6 +15,7 @@ pub enum DlqReason {
     EmptyPayload,
     Deserialize(String),
     ValueNotFinite,
+    ClickHousePermanent(String),
 }
 
 impl DlqReason {
@@ -23,12 +24,15 @@ impl DlqReason {
             DlqReason::EmptyPayload => "empty_payload",
             DlqReason::Deserialize(_) => "deserialize_error",
             DlqReason::ValueNotFinite => "value_not_finite",
+            DlqReason::ClickHousePermanent(_) => "clickhouse_permanent_error",
         }
     }
 
     fn detail(&self) -> String {
         match self {
-            DlqReason::Deserialize(d) => d.chars().take(512).collect(),
+            DlqReason::Deserialize(d) | DlqReason::ClickHousePermanent(d) => {
+                d.chars().take(512).collect()
+            }
             _ => String::new(),
         }
     }

@@ -13,6 +13,30 @@ use tracing::{error, info, warn};
 
 use crate::model::{AlertRow, MetricRow};
 
+/// ClickHouse rejects malformed rows with a 4xx response and a DB::Exception
+/// message. Retrying that exact input cannot recover, while transport errors,
+/// timeouts, and a circuit-open response can. Keep this deliberately narrow:
+/// an unrecognised error remains retryable so a transient failure never causes
+/// a source record to be discarded.
+pub fn is_permanent_clickhouse_error(error: &anyhow::Error) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    if message.contains("timeout")
+        || message.contains("connection")
+        || message.contains("network")
+        || message.contains("circuit open")
+        || message.contains("temporar")
+    {
+        return false;
+    }
+
+    message.contains("db::exception")
+        || message.contains("unknown column")
+        || message.contains("cannot parse")
+        || message.contains("cannot convert")
+        || message.contains("type mismatch")
+        || message.contains("invalid")
+}
+
 // ── Circuit Breaker ──────────────────────────────────────────
 
 /// Circuit breaker states.
@@ -411,6 +435,18 @@ mod tests {
         // Failure in half-open → back to open with increased backoff
         cb.record_failure();
         assert_eq!(cb.state_name(), "open");
+    }
+
+    #[test]
+    fn classifies_clickhouse_schema_rejection_as_permanent() {
+        let error = anyhow!("bad response: Code: 47. DB::Exception: Unknown column tenant_id");
+        assert!(is_permanent_clickhouse_error(&error));
+    }
+
+    #[test]
+    fn keeps_transport_failures_retryable() {
+        let error = anyhow!("connection refused while writing ClickHouse batch");
+        assert!(!is_permanent_clickhouse_error(&error));
     }
 
     #[tokio::test]

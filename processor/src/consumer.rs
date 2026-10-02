@@ -24,7 +24,7 @@ use crate::detector::registry::DetectorRegistry;
 use crate::dlq::{DlqProducer, DlqReason};
 use crate::model::{Alert, AlertRow, MetricRow, ProcessedMetric, RawMetric};
 use crate::producer::AlertProducer;
-use crate::storage::clickhouse::ClickHouseWriter;
+use crate::storage::clickhouse::{is_permanent_clickhouse_error, ClickHouseWriter};
 
 /// Rows accumulated for one partition, plus the highest offset they cover.
 struct PartitionBatch {
@@ -356,13 +356,31 @@ impl ConsumerLoop {
             .collect();
 
         if !rows.is_empty() {
-            // Blocks until durable or exhausted. Errors propagate: we do not commit.
-            self.writer.write_metrics(&rows).await?;
+            // Blocks until durable or exhausted. A deterministic row rejection
+            // must not freeze its partition forever: isolate it, publish the
+            // original row to the DLQ, and durably retain every good sibling.
+            // Transport and circuit-breaker errors still propagate unchanged,
+            // so their offsets remain uncommitted for retry.
+            if let Err(error) = self.writer.write_metrics(&rows).await {
+                if is_permanent_clickhouse_error(&error) {
+                    warn!(error = %error, rows = rows.len(), "isolating permanent ClickHouse row rejection");
+                    self.bisect_metrics_or_send_to_dlq().await?;
+                } else {
+                    return Err(error);
+                }
+            }
         }
 
         if !alert_rows.is_empty() {
             // Alert audit rows share the source offset durability boundary.
-            self.writer.write_alerts(&alert_rows).await?;
+            if let Err(error) = self.writer.write_alerts(&alert_rows).await {
+                if is_permanent_clickhouse_error(&error) {
+                    warn!(error = %error, rows = alert_rows.len(), "isolating permanent ClickHouse alert rejection");
+                    self.bisect_alerts_or_send_to_dlq().await?;
+                } else {
+                    return Err(error);
+                }
+            }
         }
 
         if std::env::var("PROCESSOR_FAILPOINT").as_deref() == Ok("after_write_before_commit") {
@@ -387,6 +405,96 @@ impl ConsumerLoop {
         crate::metrics::ROWS_COMMITTED.inc_by(rows.len() as f64);
         self.batches.clear();
         self.buffered = 0;
+        Ok(())
+    }
+
+    /// Re-insert subsets until a ClickHouse rejection can be attributed to a
+    /// single source row. Good subsets are already durable on return. A poison
+    /// row is written to the DLQ before its source offset is eligible to be
+    /// committed. This is iterative to avoid recursive async futures.
+    async fn bisect_metrics_or_send_to_dlq(&self) -> Result<()> {
+        let records: Vec<(i32, MetricRow)> = self
+            .batches
+            .iter()
+            .flat_map(|(partition, batch)| batch.rows.iter().cloned().map(|row| (*partition, row)))
+            .collect();
+        let mut pending = vec![records];
+
+        while let Some(records) = pending.pop() {
+            if records.is_empty() {
+                continue;
+            }
+            let rows: Vec<MetricRow> = records.iter().map(|(_, row)| row.clone()).collect();
+            match self.writer.write_metrics(&rows).await {
+                Ok(()) => {}
+                Err(error) if is_permanent_clickhouse_error(&error) && records.len() == 1 => {
+                    let (partition, row) = &records[0];
+                    let payload = serde_json::to_vec(row)?;
+                    self.dlq
+                        .send(
+                            &payload,
+                            DlqReason::ClickHousePermanent(error.to_string()),
+                            *partition,
+                            row.kafka_offset as i64,
+                        )
+                        .await?;
+                }
+                Err(error) if is_permanent_clickhouse_error(&error) => {
+                    let midpoint = records.len() / 2;
+                    let (left, right) = records.split_at(midpoint);
+                    pending.push(right.to_vec());
+                    pending.push(left.to_vec());
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+
+    /// Apply the same source-offset safety rule to alert audit rows. Alert
+    /// storage must not make an otherwise valid raw metric unrecoverable.
+    async fn bisect_alerts_or_send_to_dlq(&self) -> Result<()> {
+        let records: Vec<(i32, AlertRow)> = self
+            .batches
+            .iter()
+            .flat_map(|(partition, batch)| {
+                batch
+                    .alert_rows
+                    .iter()
+                    .cloned()
+                    .map(|row| (*partition, row))
+            })
+            .collect();
+        let mut pending = vec![records];
+
+        while let Some(records) = pending.pop() {
+            if records.is_empty() {
+                continue;
+            }
+            let rows: Vec<AlertRow> = records.iter().map(|(_, row)| row.clone()).collect();
+            match self.writer.write_alerts(&rows).await {
+                Ok(()) => {}
+                Err(error) if is_permanent_clickhouse_error(&error) && records.len() == 1 => {
+                    let (partition, row) = &records[0];
+                    let payload = serde_json::to_vec(row)?;
+                    self.dlq
+                        .send(
+                            &payload,
+                            DlqReason::ClickHousePermanent(error.to_string()),
+                            *partition,
+                            row.kafka_offset as i64,
+                        )
+                        .await?;
+                }
+                Err(error) if is_permanent_clickhouse_error(&error) => {
+                    let midpoint = records.len() / 2;
+                    let (left, right) = records.split_at(midpoint);
+                    pending.push(right.to_vec());
+                    pending.push(left.to_vec());
+                }
+                Err(error) => return Err(error),
+            }
+        }
         Ok(())
     }
 }

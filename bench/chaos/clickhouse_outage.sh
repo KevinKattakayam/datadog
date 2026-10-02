@@ -67,7 +67,7 @@ fire_continuous() {
         local ts
         ts=$(date +%s)
         METRICS=""
-        for i in $(seq 1 $BATCH_SIZE); do
+        for i in $(seq 0 $((BATCH_SIZE - 1))); do
             local seq=$((batch_num * BATCH_SIZE + i))
             [ -n "$METRICS" ] && METRICS="$METRICS,"
             METRICS="${METRICS}{\"name\":\"${TEST_PREFIX}${seq}\",\"value\":${seq},\"unit\":\"count\",\"tags\":{\"test\":\"outage\"},\"timestamp\":${ts},\"host\":\"chaos-host\"}"

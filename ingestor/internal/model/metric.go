@@ -1,15 +1,54 @@
 // Package model defines the core data structures for the observability pipeline.
 package model
 
+import (
+	"encoding/json"
+	"fmt"
+)
+
 // Metric represents a single metric data point ingested by the pipeline.
 type Metric struct {
 	Name      string            `json:"name"      binding:"required"`
-	Value     float64           `json:"value"     binding:"required"`
+	Value     float64           `json:"value"`
 	Unit      string            `json:"unit,omitempty"`
 	Tags      map[string]string `json:"tags,omitempty"`
 	Timestamp int64             `json:"timestamp" binding:"required"`
 	Host      string            `json:"host"      binding:"required"`
 	TenantID  string            `json:"tenant_id,omitempty"`
+}
+
+// UnmarshalJSON keeps an explicitly supplied zero distinct from an omitted
+// value. Gin's `required` rule considers float64(0) empty, so the rule cannot
+// model this API contract on a scalar field.
+func (m *Metric) UnmarshalJSON(data []byte) error {
+	type metricJSON struct {
+		Name      string            `json:"name"`
+		Value     *float64          `json:"value"`
+		Unit      string            `json:"unit"`
+		Tags      map[string]string `json:"tags"`
+		Timestamp int64             `json:"timestamp"`
+		Host      string            `json:"host"`
+		TenantID  string            `json:"tenant_id"`
+	}
+
+	var decoded metricJSON
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	if decoded.Value == nil {
+		return fmt.Errorf("value is required")
+	}
+
+	*m = Metric{
+		Name:      decoded.Name,
+		Value:     *decoded.Value,
+		Unit:      decoded.Unit,
+		Tags:      decoded.Tags,
+		Timestamp: decoded.Timestamp,
+		Host:      decoded.Host,
+		TenantID:  decoded.TenantID,
+	}
+	return nil
 }
 
 // BatchRequest represents a batch of metrics submitted in a single request.

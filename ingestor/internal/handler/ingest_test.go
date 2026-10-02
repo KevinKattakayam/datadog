@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -137,7 +138,7 @@ func TestIngestSingle_ValidMetric(t *testing.T) {
 
 	metric := model.Metric{
 		Name: "api.request.duration_ms", Value: 142.7, Unit: "ms",
-		Tags: map[string]string{"service": "checkout"},
+		Tags:      map[string]string{"service": "checkout"},
 		Timestamp: time.Now().Unix(), Host: "prod-api-01",
 	}
 	body, _ := json.Marshal(metric)
@@ -227,5 +228,94 @@ func TestIngestBatch_ValidBatch(t *testing.T) {
 	json.NewDecoder(w.Body).Decode(&resp)
 	if resp.Accepted != 3 {
 		t.Errorf("expected accepted=3, got %d", resp.Accepted)
+	}
+}
+
+// TestIngestBindingAcceptsExplicitZeroValues distinguishes an omitted value
+// from a valid metric whose value is zero.  Gin's `required` validator treats
+// a float64 zero value as missing, so this must exercise JSON binding rather
+// than only the domain validator.
+func TestIngestBindingAcceptsExplicitZeroValues(t *testing.T) {
+	timestamp := time.Now().Unix()
+	cases := []struct {
+		name string
+		path string
+		body string
+	}{
+		{
+			name: "single integer zero",
+			path: "/ingest",
+			body: fmt.Sprintf(`{"name":"zero.metric","value":0,"timestamp":%d,"host":"test"}`, timestamp),
+		},
+		{
+			name: "single decimal zero",
+			path: "/ingest",
+			body: fmt.Sprintf(`{"name":"zero.metric","value":0.0,"timestamp":%d,"host":"test"}`, timestamp),
+		},
+		{
+			name: "batch integer and decimal zero",
+			path: "/ingest/batch",
+			body: fmt.Sprintf(`{"metrics":[{"name":"zero.integer","value":0,"timestamp":%d,"host":"test"},{"name":"zero.decimal","value":0.0,"timestamp":%d,"host":"test"}]}`, timestamp, timestamp),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			router := gin.New()
+			router.POST("/ingest", func(c *gin.Context) {
+				var metric model.Metric
+				if err := c.ShouldBindJSON(&metric); err != nil {
+					c.Status(http.StatusBadRequest)
+					return
+				}
+				if err := validator.ValidateMetric(&metric); err != nil {
+					c.Status(http.StatusBadRequest)
+					return
+				}
+				c.Status(http.StatusAccepted)
+			})
+			router.POST("/ingest/batch", func(c *gin.Context) {
+				var batch model.BatchRequest
+				if err := c.ShouldBindJSON(&batch); err != nil {
+					c.Status(http.StatusBadRequest)
+					return
+				}
+				for i := range batch.Metrics {
+					if err := validator.ValidateMetric(&batch.Metrics[i]); err != nil {
+						c.Status(http.StatusBadRequest)
+						return
+					}
+				}
+				c.Status(http.StatusAccepted)
+			})
+
+			req := httptest.NewRequest(http.MethodPost, tc.path, bytes.NewBufferString(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			if w.Code != http.StatusAccepted {
+				t.Fatalf("explicit zero value was rejected: status=%d body=%s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestIngestBindingRejectsMissingValue(t *testing.T) {
+	router := gin.New()
+	router.POST("/ingest", func(c *gin.Context) {
+		var metric model.Metric
+		if err := c.ShouldBindJSON(&metric); err != nil {
+			c.Status(http.StatusBadRequest)
+			return
+		}
+		c.Status(http.StatusAccepted)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/ingest", bytes.NewBufferString(fmt.Sprintf(`{"name":"missing.value","timestamp":%d,"host":"test"}`, time.Now().Unix())))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("missing value was accepted: status=%d", w.Code)
 	}
 }

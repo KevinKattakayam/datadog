@@ -69,7 +69,7 @@ fire_metrics() {
     ts=$(date +%s)
     while [ $batch_num -lt $TOTAL_BATCHES ]; do
         METRICS=""
-        for i in $(seq 1 $BATCH_SIZE); do
+        for i in $(seq 0 $((BATCH_SIZE - 1))); do
             SEQ=$((batch_num * BATCH_SIZE + i))
             [ -n "$METRICS" ] && METRICS="$METRICS,"
             METRICS="${METRICS}{\"name\":\"${TEST_NAME}\",\"value\":${SEQ},\"unit\":\"count\",\"tags\":{\"seq\":\"${SEQ}\"},\"timestamp\":${ts},\"host\":\"chaos-host\"}"

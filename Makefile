@@ -6,7 +6,7 @@
        helm-template helm-install helm-uninstall \
        grpc-gen \
        terraform-plan terraform-apply \
-       chaos chaos-kill9 chaos-clickhouse bench-throughput
+       chaos chaos-kill9 chaos-clickhouse chaos-replay bench-throughput
 
 
 # Colors
@@ -132,6 +132,9 @@ chaos-kill9: ## Chaos: kill -9 processor, assert zero data loss
 chaos-clickhouse: ## Chaos: pause ClickHouse, assert recovery and zero loss
 	@echo "$(CYAN)▸ Running ClickHouse outage chaos test...$(RESET)"
 	bash bench/chaos/clickhouse_outage.sh
+
+chaos-replay: ## Chaos: crash after ClickHouse write and verify FINAL deduplication
+	bash bench/chaos/replay_final_no_loss.sh
 
 # ── Helm ──────────────────────────────────────────────────────
 

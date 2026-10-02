@@ -253,6 +253,7 @@ services:
       # Production defaults to earliest in the processor configuration.
       KAFKA_CONSUMER_GROUP: processor-group-local
       KAFKA_AUTO_OFFSET_RESET: latest
+      PROCESSOR_FAILPOINT: ${PROCESSOR_FAILPOINT:-}
       CLICKHOUSE_URL: http://clickhouse:8123
       CLICKHOUSE_USER: processor
       CLICKHOUSE_PASSWORD: processor_dev

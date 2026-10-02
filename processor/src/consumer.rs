@@ -365,6 +365,11 @@ impl ConsumerLoop {
             self.writer.write_alerts(&alert_rows).await?;
         }
 
+        if std::env::var("PROCESSOR_FAILPOINT").as_deref() == Ok("after_write_before_commit") {
+            error!("failpoint after_write_before_commit triggered; aborting before offset commit");
+            std::process::abort();
+        }
+
         let mut tpl = TopicPartitionList::new();
         for (partition, b) in self.batches.iter() {
             if b.last_offset >= 0 {

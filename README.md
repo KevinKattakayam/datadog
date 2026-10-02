@@ -6,7 +6,7 @@ The processor writes each consumed batch to ClickHouse before committing its Kaf
 
 ## Quick start
 
-Requirements: Docker Compose v2, Go 1.22+, and Rust stable. The local Compose stack is a single-broker development environment using PLAINTEXT Kafka and development credentials. Do not use it as a production deployment.
+Requirements: Docker Compose v2, Go 1.25+, and Rust stable. The local Compose stack is a single-broker development environment using PLAINTEXT Kafka and development credentials. Do not use it as a production deployment.
 
 ```bash
 git clone https://github.com/Kevinbastin/datadog

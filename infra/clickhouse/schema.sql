@@ -64,11 +64,13 @@ CREATE TABLE IF NOT EXISTS observability.alerts
     anomaly_score Float64                CODEC(Gorilla, LZ4),
     detector_type LowCardinality(String) CODEC(ZSTD(1)),
     severity      LowCardinality(String) CODEC(ZSTD(1)),
-    tags          Map(String, String)    CODEC(ZSTD(1))
+    tags          Map(String, String)    CODEC(ZSTD(1)),
+    kafka_partition UInt16,
+    kafka_offset    UInt64
 )
-ENGINE = MergeTree()
+ENGINE = ReplacingMergeTree()
 PARTITION BY toYYYYMM(ts)
-ORDER BY (tenant_id, metric_name, host, ts)
+ORDER BY (tenant_id, metric_name, host, ts, kafka_partition, kafka_offset)
 TTL toDateTime(ts) + INTERVAL 1 YEAR DELETE
 SETTINGS index_granularity = 8192;
 

@@ -123,10 +123,12 @@ pub struct AlertRow {
     pub detector_type: String,
     pub severity: String,
     pub tags: Vec<(String, String)>,
+    pub kafka_partition: u16,
+    pub kafka_offset: u64,
 }
 
 impl AlertRow {
-    pub fn from_alert(a: &Alert) -> Self {
+    pub fn from_alert(a: &Alert, partition: i32, offset: i64) -> Self {
         let tags: Vec<(String, String)> =
             a.tags.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
 
@@ -140,6 +142,32 @@ impl AlertRow {
             detector_type: a.detector_type.clone(),
             severity: a.severity.to_string(),
             tags,
+            kafka_partition: partition as u16,
+            kafka_offset: offset as u64,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn alert_row_keeps_source_kafka_coordinates() {
+        let alert = Alert {
+            timestamp: 1_700_000_000,
+            metric_name: "cpu.usage".to_string(),
+            host: "host-a".to_string(),
+            tenant_id: Some("tenant-a".to_string()),
+            value: 99.0,
+            anomaly_score: 4.0,
+            detector_type: "ewma".to_string(),
+            severity: AlertSeverity::Critical,
+            tags: HashMap::new(),
+        };
+
+        let row = AlertRow::from_alert(&alert, 3, 42);
+        assert_eq!(row.kafka_partition, 3);
+        assert_eq!(row.kafka_offset, 42);
     }
 }

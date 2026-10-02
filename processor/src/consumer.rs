@@ -287,7 +287,7 @@ impl ConsumerLoop {
                 warn!(error = %e, "alert fan-out failed");
                 crate::metrics::FANOUT_ERRORS.inc();
             }
-            alert_row = Some(AlertRow::from_alert(&alert));
+            alert_row = Some(AlertRow::from_alert(&alert, partition, offset));
 
             info!(
                 metric = %raw.name,

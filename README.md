@@ -70,7 +70,7 @@ ClickHouse schema is in `infra/clickhouse/schema.sql`:
 
 - `metrics` uses `ReplacingMergeTree` with Kafka coordinates in the ordering key and 90-day raw retention.
 - Hourly and daily `AggregatingMergeTree` materialized views store rollups. They process each inserted block, so replays may be counted again; only raw table reads using `FINAL` collapse replayed rows today.
-- `alerts` stores anomaly records; `dlq_events` is a schema for DLQ observability, while original poison payloads are currently preserved in Kafka topic `metrics.dlq` with reason and source-coordinate headers.
+- `alerts` uses Kafka partition and offset in a `ReplacingMergeTree` key so source-record replays collapse under `FINAL`. Existing deployments need the explicit [alerts migration](infra/clickhouse/migrations/001_alerts_replacing.sql); `dlq_events` is a schema for DLQ observability, while original poison payloads are currently preserved in Kafka topic `metrics.dlq` with reason and source-coordinate headers.
 - `cardinality_hourly` attributes host and tag-combination cardinality by tenant and metric.
 
 The Compose bootstrap applies idempotent creation and additive column changes to reused local volumes. It does not rebuild an existing table to change its ordering key; migrate/rebuild older production tables deliberately before relying on tenant-first pruning.

@@ -270,7 +270,10 @@ impl ConsumerLoop {
     }
 
     /// Record that `offset` on `partition` has been accounted for, optionally
-    /// with a row that must be persisted before the offset may be committed.
+    /// with rows that must be persisted before the offset may be committed.
+    ///
+    /// `buffered` counts Kafka records, not ClickHouse rows: DLQ-only records
+    /// still require an offset commit after their DLQ publish succeeds.
     fn account(
         &mut self,
         partition: i32,
@@ -283,9 +286,9 @@ impl ConsumerLoop {
             .entry(partition)
             .or_insert_with(PartitionBatch::new);
         b.last_offset = offset;
+        self.buffered += 1;
         if let Some(r) = row {
             b.rows.push(r);
-            self.buffered += 1;
         }
         if let Some(a) = alert_row {
             b.alert_rows.push(a);

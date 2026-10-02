@@ -1,0 +1,68 @@
+[0;36m▸ Running integration tests...[0m
+bash tests/integration/test_pipeline.sh
+[0;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[0m
+[0;36m  Enterprise Observability Pipeline — Integration Tests[0m
+[0;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[0m
+
+[0;36m▸ Test Group: Ingestor Health[0m
+  [0;32m✓[0m GET /health returns 200
+  [0;32m✓[0m GET /ready returns 200
+  [0;32m✓[0m GET /metrics returns 200
+
+[0;36m▸ Test Group: Single Metric Ingestion[0m
+  [0;32m✓[0m POST /ingest accepted single metric
+
+[0;36m▸ Test Group: Batch Ingestion[0m
+  [0;32m✓[0m POST /ingest/batch accepted 50 metrics
+
+[0;36m▸ Test Group: Input Validation[0m
+  [0;32m✓[0m Rejects metric with missing name (400)
+  [0;32m✓[0m Rejects metric with missing host (400)
+  [0;32m✓[0m Rejects empty batch (400)
+  [0;32m✓[0m Rejects invalid JSON (400)
+
+[0;36m▸ Test Group: Kafka Verification[0m
+  [0;32m✓[0m Kafka metrics.raw has 66523 messages
+  [0;32m✓[0m Topic metrics.raw exists
+  [0;32m✓[0m Topic metrics.processed exists
+  [0;32m✓[0m Topic alerts.fired exists
+  [0;32m✓[0m Topic metrics.dlq exists
+
+[0;36m▸ Test Group: ClickHouse Schema[0m
+  [0;32m✓[0m ClickHouse metrics table exists
+  [0;32m✓[0m ClickHouse metrics_hourly MV exists
+  [0;32m✓[0m ClickHouse metrics_daily MV exists
+  [0;32m✓[0m ClickHouse alerts table exists
+
+[0;36m▸ Test Group: Prometheus[0m
+  [0;32m✓[0m Prometheus is healthy
+
+[0;36m▸ Test Group: Grafana[0m
+  [0;32m✓[0m Grafana is healthy
+  [0;32m✓[0m Prometheus datasource provisioning is configured (Grafana admin auth is customized)
+
+[0;36m▸ Test Group: Alertmanager[0m
+  [0;32m✓[0m Alertmanager is healthy
+
+[0;36m▸ Test Group: Prometheus Metrics[0m
+  [0;32m✓[0m ingestor_requests_total metric exposed
+  [0;32m✓[0m ingestor_publish_errors_total metric exposed
+  [0;32m✓[0m ingestor_batch_size_histogram metric exposed
+  [0;32m✓[0m ingestor_kafka_messages_published_total metric exposed
+
+[0;36m▸ Test Group: ClickHouse Data Verification (Row Assertions)[0m
+  Waiting for this run's metrics to reach ClickHouse...
+  [0;32m✓[0m ClickHouse metrics table has 51 integration test rows
+  [0;32m✓[0m Single metric 'integration.test.single' found in ClickHouse
+  [0;32m✓[0m Batch metrics landed: 50 rows (expected ~50)
+  [0;32m✓[0m tenant_id column populated (1 distinct tenants)
+  [0;32m✓[0m ClickHouse dlq_events table exists
+
+[0;36m▸ Test Group: Processor Health[0m
+  [0;32m✓[0m Processor /health returns 200
+  [0;32m✓[0m Processor /ready returns 200
+
+[0;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[0m
+  [0;32mAll 33 tests passed![0m
+[0;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[0m
+[0;32m✓ Integration tests complete[0m

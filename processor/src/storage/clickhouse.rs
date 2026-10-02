@@ -343,6 +343,7 @@ impl ClickHouseWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::MetricRow;
 
     #[test]
     fn test_circuit_breaker_starts_closed() {
@@ -410,5 +411,31 @@ mod tests {
         // Failure in half-open → back to open with increased backoff
         cb.record_failure();
         assert_eq!(cb.state_name(), "open");
+    }
+
+    #[tokio::test]
+    async fn write_metrics_returns_error_after_configured_attempts_and_keeps_rows() {
+        // Port 1 has no listener in the test environment. The caller owns the
+        // slice, so a failed writer must return an error without mutating it.
+        let writer =
+            ClickHouseWriter::new("http://127.0.0.1:1", "observability", "default", "", 2).unwrap();
+        let rows = vec![MetricRow {
+            ts: 1_700_000_000_000,
+            tenant_id: "tenant-a".to_string(),
+            name: "test.metric".to_string(),
+            host: "host-a".to_string(),
+            value: 1.0,
+            unit: "count".to_string(),
+            tags: vec![],
+            anomaly_score: 0.0,
+            is_anomaly: 0,
+            kafka_partition: 1,
+            kafka_offset: 42,
+        }];
+        let before = rows.clone();
+
+        assert!(writer.write_metrics(&rows).await.is_err());
+        assert_eq!(rows.len(), before.len());
+        assert_eq!(rows[0].kafka_offset, before[0].kafka_offset);
     }
 }

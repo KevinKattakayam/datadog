@@ -800,6 +800,7 @@ dependencies = [
  "clickhouse",
  "envy",
  "fastrand",
+ "futures-util",
  "http-body-util",
  "hyper",
  "hyper-util",

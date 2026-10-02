@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use futures_util::StreamExt;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{CommitMode, Consumer, StreamConsumer};
 use rdkafka::message::Message;
@@ -43,7 +44,7 @@ impl PartitionBatch {
 }
 
 pub struct ConsumerLoop {
-    consumer: StreamConsumer,
+    consumer: Arc<StreamConsumer>,
     writer: Arc<ClickHouseWriter>,
     alerts: Arc<AlertProducer>,
     dlq: Arc<DlqProducer>,
@@ -75,7 +76,7 @@ impl ConsumerLoop {
         consumer.subscribe(&[&config.kafka_topic_raw])?;
 
         Ok(ConsumerLoop {
-            consumer,
+            consumer: Arc::new(consumer),
             writer,
             alerts,
             dlq,
@@ -95,9 +96,15 @@ impl ConsumerLoop {
         let flush_interval = Duration::from_millis(self.config.flush_interval_ms);
         let mut ticker = tokio::time::interval(flush_interval);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        // Once a flush fails, stop consuming until the same batch is durable.
-        // This keeps memory bounded and makes Kafka the only growing queue.
+        // Once a flush fails, pause assigned partitions. We must still call
+        // recv while paused so librdkafka continues polling and heartbeating;
+        // otherwise max.poll.interval.ms evicts this member during an outage.
         let mut flush_blocked = false;
+        // Keep one stream alive for the lifetime of the loop. Recreating a
+        // recv future whenever the flush timer fires can cancel it before
+        // librdkafka's scheduled wake-up polls the consumer.
+        let polling_consumer = Arc::clone(&self.consumer);
+        let mut messages = polling_consumer.stream();
 
         info!(
             topic = %self.config.kafka_topic_raw,
@@ -106,8 +113,10 @@ impl ConsumerLoop {
         );
 
         loop {
+            // Do not bias the periodic flush over recv. During an outage the
+            // flush branch can be ready repeatedly; fairness is required so
+            // the stream consumer gets a chance to poll and heartbeat.
             tokio::select! {
-                biased;
 
                 _ = shutdown.changed() => {
                     if *shutdown.borrow() {
@@ -124,37 +133,76 @@ impl ConsumerLoop {
                 _ = ticker.tick() => {
                     if self.buffered > 0 {
                         match self.flush_all().await {
-                            Ok(()) => flush_blocked = false,
+                            Ok(()) => {
+                                if flush_blocked {
+                                    self.resume_assigned();
+                                }
+                                flush_blocked = false;
+                            }
                             Err(e) => {
+                                self.pause_assigned();
                                 flush_blocked = true;
-                                error!(error = %e, "timed flush failed; pausing consumption until retry succeeds");
+                                error!(error = %e, "timed flush failed; partitions paused while polling continues");
                             }
                         }
                     }
                 }
 
-                msg = self.consumer.recv(), if !flush_blocked => {
+                // Continue receiving while partitions are paused. This keeps
+                // group heartbeats and rebalance handling alive. librdkafka
+                // can return records it prefetched before pause; retaining
+                // those in the same uncommitted batch is safe and bounded.
+                msg = messages.next() => {
                     match msg {
-                        Ok(m) => {
+                        Some(Ok(m)) => {
                             let owned = m.detach();
                             self.handle(&owned).await?;
-                            if self.buffered >= self.config.batch_size {
+                            if !flush_blocked && self.buffered >= self.config.batch_size {
                                 match self.flush_all().await {
-                                    Ok(()) => flush_blocked = false,
+                                    Ok(()) => {
+                                        if flush_blocked {
+                                            self.resume_assigned();
+                                        }
+                                        flush_blocked = false;
+                                    }
                                     Err(e) => {
+                                        self.pause_assigned();
                                         flush_blocked = true;
-                                        error!(error = %e, "size flush failed; pausing consumption until retry succeeds");
+                                        error!(error = %e, "size flush failed; partitions paused while polling continues");
                                     }
                                 }
                             }
                         }
-                        Err(e) => {
+                        Some(Err(e)) => {
                             error!(error = %e, "kafka recv error");
                             tokio::time::sleep(Duration::from_secs(1)).await;
                         }
+                        None => return Err(anyhow::anyhow!("kafka message stream ended")),
                     }
                 }
             }
+        }
+    }
+
+    fn pause_assigned(&self) {
+        match self.consumer.assignment() {
+            Ok(partitions) => {
+                if let Err(e) = self.consumer.pause(&partitions) {
+                    warn!(error = %e, "failed to pause assigned partitions");
+                }
+            }
+            Err(e) => warn!(error = %e, "failed to obtain assigned partitions for pause"),
+        }
+    }
+
+    fn resume_assigned(&self) {
+        match self.consumer.assignment() {
+            Ok(partitions) => {
+                if let Err(e) = self.consumer.resume(&partitions) {
+                    warn!(error = %e, "failed to resume assigned partitions");
+                }
+            }
+            Err(e) => warn!(error = %e, "failed to obtain assigned partitions for resume"),
         }
     }
 

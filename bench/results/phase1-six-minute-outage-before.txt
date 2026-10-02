@@ -1,0 +1,109 @@
+[0;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[0m
+[0;36m  Chaos Test: ClickHouse 360s Outage[0m
+[0;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[0m
+
+[0;33m▸ Starting load generator at 50/sec...[0m
+[0;33m▸ Running for 2s to establish steady state...[0m
+[0;31m▸ PAUSING ClickHouse for 360s...[0m
+obs-clickhouse
+  Outage 10s: lag=550
+  Outage 20s: lag=1100
+  Outage 30s: lag=1700
+  Outage 40s: lag=2250
+  Outage 50s: lag=2800
+  Outage 60s: lag=3350
+  Outage 70s: lag=3900
+  Outage 80s: lag=4450
+  Outage 90s: lag=5050
+  Outage 100s: lag=5600
+  Outage 110s: lag=6150
+  Outage 120s: lag=6700
+  Outage 130s: lag=7250
+  Outage 140s: lag=7800
+  Outage 150s: lag=8350
+  Outage 160s: lag=8950
+  Outage 170s: lag=9500
+  Outage 180s: lag=10050
+  Outage 190s: lag=10600
+  Outage 200s: lag=11200
+  Outage 210s: lag=11750
+  Outage 220s: lag=12300
+  Outage 230s: lag=12850
+  Outage 240s: lag=13400
+  Outage 250s: lag=14000
+  Outage 260s: lag=14550
+  Outage 270s: lag=15100
+  Outage 280s: lag=15650
+  Outage 290s: lag=16200
+  Outage 300s: lag=16800
+  Outage 310s: lag=17300
+  Outage 320s: lag=17300
+  Outage 330s: lag=17300
+  Outage 340s: lag=17300
+  Outage 350s: lag=17300
+  Outage 360s: lag=17300
+[0;32m▸ UNPAUSING ClickHouse...[0m
+obs-clickhouse
+[0;33m▸ Waiting for load generator to complete...[0m
+[0;33m▸ Waiting for consumer lag to drain...[0m
+  Lag: 17300 (0s since unpause)
+  Lag: 17300 (5s since unpause)
+  Lag: 17300 (10s since unpause)
+  Lag: 17300 (15s since unpause)
+  Lag: 17300 (20s since unpause)
+  Lag: 17300 (25s since unpause)
+  Lag: 17300 (30s since unpause)
+  Lag: 17300 (35s since unpause)
+  Lag: 17300 (40s since unpause)
+  Lag: 17300 (45s since unpause)
+  Lag: 17300 (50s since unpause)
+  Lag: 17300 (55s since unpause)
+  Lag: 17300 (60s since unpause)
+  Lag: 17300 (65s since unpause)
+  Lag: 17300 (70s since unpause)
+  Lag: 17300 (75s since unpause)
+  Lag: 17300 (80s since unpause)
+  Lag: 17300 (85s since unpause)
+  Lag: 17300 (90s since unpause)
+  Lag: 17300 (95s since unpause)
+  Lag: 17300 (100s since unpause)
+  Lag: 17300 (105s since unpause)
+  Lag: 17300 (110s since unpause)
+  Lag: 17300 (115s since unpause)
+  Lag: 17300 (120s since unpause)
+  Lag: 17300 (125s since unpause)
+  Lag: 17300 (130s since unpause)
+  Lag: 17300 (135s since unpause)
+  Lag: 17300 (140s since unpause)
+  Lag: 17300 (145s since unpause)
+  Lag: 17300 (150s since unpause)
+  Lag: 17300 (155s since unpause)
+  Lag: 17300 (160s since unpause)
+  Lag: 17300 (165s since unpause)
+  Lag: 17300 (170s since unpause)
+  Lag: 17300 (175s since unpause)
+  Lag: 17300 (180s since unpause)
+  Lag: 17300 (185s since unpause)
+  Lag: 17300 (190s since unpause)
+  Lag: 17300 (195s since unpause)
+  Lag: 17300 (200s since unpause)
+  Lag: 17300 (205s since unpause)
+  Lag: 17300 (210s since unpause)
+  Lag: 17300 (215s since unpause)
+  Lag: 17300 (220s since unpause)
+  Lag: 17300 (225s since unpause)
+  Lag: 17300 (230s since unpause)
+  Lag: 17300 (235s since unpause)
+  Lag: 17300 (240s since unpause)
+  Lag: 17300 (245s since unpause)
+  Lag: 17300 (250s since unpause)
+  Lag: 17300 (255s since unpause)
+  Lag: 17300 (260s since unpause)
+  Lag: 17300 (265s since unpause)
+  Lag: 17300 (270s since unpause)
+  Lag: 17300 (275s since unpause)
+  Lag: 17300 (280s since unpause)
+  Lag: 17300 (285s since unpause)
+  Lag: 17300 (290s since unpause)
+  Lag: 17300 (295s since unpause)
+consumer lag did not drain within 300s

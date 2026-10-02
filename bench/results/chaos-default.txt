@@ -16,25 +16,21 @@ obs-processor
 [0;33m▸ Restarting processor...[0m
 obs-processor
 [0;33m▸ Waiting for consumer lag to reach zero...[0m
-  Lag: 483 (0s elapsed)
-  Lag: 483 (5s elapsed)
-  Lag: 483 (10s elapsed)
-  Lag: 483 (15s elapsed)
-  Lag: 483 (20s elapsed)
-  Lag: 444 (25s elapsed)
-  Lag: 389 (30s elapsed)
-  Lag: 329 (35s elapsed)
-  Lag: 274 (40s elapsed)
-  Lag: 219 (45s elapsed)
-  Lag: 164 (50s elapsed)
-  Lag: 104 (55s elapsed)
-  Lag: 49 (60s elapsed)
-  Lag reached zero after 65s
+  Lag: 485 (0s elapsed)
+  Lag: 444 (5s elapsed)
+  Lag: 384 (10s elapsed)
+  Lag: 324 (15s elapsed)
+  Lag: 264 (20s elapsed)
+  Lag: 204 (25s elapsed)
+  Lag: 144 (30s elapsed)
+  Lag: 89 (35s elapsed)
+  Lag: 29 (40s elapsed)
+  Lag reached zero after 45s
 
 [0;36m▸ Verifying results...[0m
 
 [0;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[0m
-  sent=500  unique=500  rows=500  dupes=0  recovery_seconds=65
+  sent=500  unique=500  rows=500  dupes=0  recovery_seconds=45
   [0;32m✓ PASSED — zero data loss[0m
 [0;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[0m
 [0;36m▸ Running ClickHouse outage chaos test...[0m
@@ -47,34 +43,33 @@ bash bench/chaos/clickhouse_outage.sh
 [0;33m▸ Running for 5s to establish steady state...[0m
 [0;31m▸ PAUSING ClickHouse for 10s...[0m
 obs-clickhouse
-  Outage 10s: lag=759
+  Outage 10s: lag=761
 [0;32m▸ UNPAUSING ClickHouse...[0m
 obs-clickhouse
 [0;33m▸ Waiting for load generator to complete...[0m
 [0;33m▸ Waiting for consumer lag to drain...[0m
-  Lag: 869 (0s since unpause)
-  Lag: 809 (5s since unpause)
-  Lag: 754 (10s since unpause)
-  Lag: 699 (15s since unpause)
-  Lag: 644 (20s since unpause)
-  Lag: 584 (25s since unpause)
-  Lag: 529 (30s since unpause)
-  Lag: 474 (35s since unpause)
-  Lag: 419 (40s since unpause)
-  Lag: 359 (45s since unpause)
-  Lag: 304 (50s since unpause)
-  Lag: 249 (55s since unpause)
-  Lag: 189 (60s since unpause)
-  Lag: 134 (65s since unpause)
-  Lag: 79 (70s since unpause)
-  Lag: 19 (75s since unpause)
-  Lag drained to zero in 106s
+  Lag: 871 (0s since unpause)
+  Lag: 811 (5s since unpause)
+  Lag: 751 (10s since unpause)
+  Lag: 691 (15s since unpause)
+  Lag: 631 (20s since unpause)
+  Lag: 571 (25s since unpause)
+  Lag: 511 (30s since unpause)
+  Lag: 451 (35s since unpause)
+  Lag: 391 (40s since unpause)
+  Lag: 336 (45s since unpause)
+  Lag: 276 (50s since unpause)
+  Lag: 211 (55s since unpause)
+  Lag: 151 (60s since unpause)
+  Lag: 96 (65s since unpause)
+  Lag: 34 (70s since unpause)
+  Lag drained to zero in 108s
 
 [0;36m▸ Verifying results...[0m
 
 [0;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[0m
   sent_accepted=950  rows=950  unique=950
   rejected_batches=0
-  peak_lag=759  recovery=106s
+  peak_lag=761  recovery=108s
   [0;32m✓ PASSED — data survived ClickHouse outage[0m
 [0;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[0m

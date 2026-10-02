@@ -113,6 +113,7 @@ docker start "$PROCESSOR_CONTAINER"
 # Step 5: Wait for lag to drain
 echo -e "${YELLOW}▸ Waiting for consumer lag to reach zero...${RESET}"
 MAX_WAIT=120
+POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-5}"
 WAITED=0
 DRAINED=0
 RECOVERY_SECONDS=0
@@ -125,8 +126,8 @@ while [ $WAITED -lt $MAX_WAIT ]; do
         break
     fi
     echo -e "  Lag: $LAG (${WAITED}s elapsed)"
-    sleep 5
-    WAITED=$((WAITED + 5))
+    sleep "$POLL_INTERVAL_SECONDS"
+    WAITED=$((WAITED + POLL_INTERVAL_SECONDS))
 done
 if [ "$DRAINED" -ne 1 ]; then
     echo "consumer lag did not drain within ${MAX_WAIT}s" >&2

@@ -1,0 +1,35 @@
+[0;36m▸ Running kill -9 chaos test...[0m
+bash bench/chaos/kill9_no_loss.sh
+[0;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[0m
+[0;36m  Chaos Test: kill -9 with zero data loss[0m
+[0;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[0m
+
+  Metrics to send: 5000
+  Rate:            5000/sec
+  Kill after:      0s
+
+[0;33m▸ Sending 5000 numbered metrics at 5000/sec...[0m
+[0;33m▸ Waiting 0s then killing processor...[0m
+[0;31m▸ SIGKILL → obs-processor[0m
+obs-processor
+[0;33m▸ Waiting for load generator to finish...[0m
+[0;33m▸ Restarting processor...[0m
+obs-processor
+[0;33m▸ Waiting for consumer lag to reach zero...[0m
+  Lag: 5000 (0s elapsed)
+  Lag: 5000 (1s elapsed)
+  Lag: 5000 (2s elapsed)
+  Lag: 5000 (3s elapsed)
+  Lag: 5000 (4s elapsed)
+  Lag: 5000 (5s elapsed)
+  Lag: 5000 (6s elapsed)
+  Lag: 5000 (7s elapsed)
+  Lag: 5000 (8s elapsed)
+  Lag reached zero after 9s
+
+[0;36m▸ Verifying results...[0m
+
+[0;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[0m
+  sent=5000  unique=5000  rows=5000  dupes=0  recovery_seconds=9
+  [0;32m✓ PASSED — zero data loss[0m
+[0;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[0m

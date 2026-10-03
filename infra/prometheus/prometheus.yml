@@ -80,12 +80,3 @@ scrape_configs:
       - targets: ["tempo:3200"]
         labels:
           service: tempo
-
-  # Kafka Connect
-  - job_name: kafka-connect
-    metrics_path: /
-    static_configs:
-      - targets: ["kafka-connect:8083"]
-        labels:
-          service: kafka-connect
-

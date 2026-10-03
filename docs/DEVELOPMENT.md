@@ -10,7 +10,6 @@
 | Rust | stable | Build/test processor |
 | Helm | 3.14+ | Kubernetes deployment |
 | k6 | latest | Load testing (optional) |
-| protoc | 3.x | gRPC codegen (optional) |
 
 Compose uses `infra/alertmanager/alertmanager.local.yml`, which intentionally
 discards notifications. The production routing example is a template; replace
@@ -76,9 +75,7 @@ curl "http://localhost:8123/?query=SELECT+*+FROM+observability.metrics+ORDER+BY+
 │   ├── alertmanager/     Routing config
 │   ├── otel-collector/   OTLP fan-out config
 │   ├── tempo/            Trace backend config
-│   ├── kafka/            Topic creation scripts
-│   ├── kafka-connect/    ClickHouse sink connector
-│   └── schema-registry/  legacy Avro drafts (not used by the runtime)
+│   └── kafka/            Topic creation scripts
 ├── tests/
 │   ├── integration/      End-to-end pipeline test
 │   └── load/             k6 + Go load generators

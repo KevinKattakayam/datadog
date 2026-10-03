@@ -4,7 +4,6 @@
 .PHONY: dev down test lint load-test bench logs clean topics build help \
        infra fmt fire integration-test sdk-test \
        helm-template helm-install helm-uninstall \
-       grpc-gen \
        terraform-plan terraform-apply \
        chaos chaos-kill9 chaos-clickhouse chaos-replay bench-throughput
 
@@ -15,9 +14,9 @@ YELLOW := \033[0;33m
 CYAN   := \033[0;36m
 RESET  := \033[0m
 
-# Go & Rust paths
-export PATH := $(HOME)/.local/go/bin:$(HOME)/go/bin:$(HOME)/.cargo/bin:$(PATH)
-export GOROOT := $(HOME)/.local/go
+# Go & Rust paths. Do not export GOROOT: the go binary knows its own root,
+# and forcing one breaks every machine where Go is installed elsewhere.
+export PATH := $(HOME)/go/bin:$(HOME)/.cargo/bin:$(PATH)
 
 help: ## Show this help
 	@echo "$(CYAN)Enterprise Observability Pipeline$(RESET)"
@@ -153,14 +152,6 @@ helm-install: ## Deploy pipeline to Kubernetes via Helm
 
 helm-uninstall: ## Uninstall Helm release
 	helm uninstall obs-pipeline --namespace observability
-
-grpc-gen: ## Generate Go code from protobuf definitions (requires protoc)
-	@echo "$(CYAN)▸ Generating gRPC code from proto...$(RESET)"
-	protoc --go_out=. --go-grpc_out=. \
-		--go_opt=paths=source_relative \
-		--go-grpc_opt=paths=source_relative \
-		ingestor/proto/v1/metric.proto
-	@echo "$(GREEN)✓ Proto generated$(RESET)"
 
 terraform-plan: ## Run Terraform plan for AWS EKS
 	@echo "$(CYAN)▸ Planning infrastructure...$(RESET)"

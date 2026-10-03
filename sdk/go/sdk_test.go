@@ -1,12 +1,12 @@
 package obsdk
 
 import (
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
-	"encoding/json"
-	"io"
 )
 
 func TestNewClient(t *testing.T) {

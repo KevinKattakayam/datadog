@@ -165,3 +165,7 @@ The chaos scripts require Docker access and a running local stack. [Captured smo
 - `docs/` — architecture, development, failure modes, runbooks, and [roadmap status](docs/ROADMAP_STATUS.md).
 
 See [Architecture](docs/ARCHITECTURE.md), [Failure Modes](docs/FAILURE_MODES.md), [Development](docs/DEVELOPMENT.md), and [Interview and demo notes](docs/INTERVIEW_GUIDE.md) for implementation details and a reproducible walkthrough.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

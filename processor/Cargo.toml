@@ -3,6 +3,7 @@ name = "processor"
 version = "2.0.0"
 edition = "2021"
 description = "Observability Pipeline — Rust Kafka Consumer & Anomaly Detector"
+license = "MIT"
 
 [dependencies]
 # Kafka consumer

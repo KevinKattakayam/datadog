@@ -93,6 +93,7 @@ services:
       - clickhouse-data:/var/lib/clickhouse
       - ./infra/clickhouse/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
       - ./infra/clickhouse/init.sh:/docker-entrypoint-initdb.d/00-init.sh:ro
+      - ./infra/clickhouse/config.d/prometheus.xml:/etc/clickhouse-server/config.d/prometheus.xml:ro
     environment:
       CLICKHOUSE_DB: observability
       CLICKHOUSE_USER: default

@@ -45,9 +45,9 @@ its environment/output in `bench/results/`.
    history and rollups. Prometheus provides operational scraping and alerting;
    it is not the long-retention multi-tenant event store here.
 7. **How do you evolve the event schema?** JSON records carry a schema-version
-   header and are decoded by the processor. The Schema Registry/Avro drafts
-   were removed from the active Compose path because the application did not
-   use them. A future incompatible payload needs an explicit versioned
+   header and are decoded by the processor. The unused Schema Registry/Avro
+   drafts, a TCP server mislabelled as gRPC, and an unwired Redis cache were
+   deleted rather than left to imply capabilities the runtime lacks. A future incompatible payload needs an explicit versioned
    migration and compatibility policy.
 8. **What does deployment do to in-flight data?** The processor handles
    shutdown by attempting to flush before exit and leaves offsets uncommitted

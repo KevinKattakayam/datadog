@@ -27,7 +27,10 @@ Kafka produce acknowledgements and processor offset commits are used as durabili
 
 - **`ProduceSync` with `acks=all`.** The ingestor returns `202 Accepted` only after every in-sync replica acknowledges the record. Kafka unavailable → `503 Service Unavailable` with `Retry-After`.
 - **API-key authentication.** Keys are stored as SHA-256 hashes loaded from a mounted Kubernetes Secret. The plaintext key is shown once at issue time and never persisted.
-- **Per-tenant rate limiting.** Each tenant gets an independent token bucket. The lock on the bucket is per-bucket (`tokenBucket.mu`), not per-registry, so one tenant's contention does not block another.
+- **Two per-tenant limits.** A requests-per-second bucket is checked before the body is read, and a metrics-per-second quota is charged per batch item after parsing, so batching cannot multiply a tenant's throughput. Each tenant has its own bucket with its own lock, and every refusal carries `Retry-After` computed from the bucket.
+- **Bounded input.** `MaxBodyBytes` refuses oversized requests with 413, whether they declare a `Content-Length` or stream chunked; `ReadHeaderTimeout` guards against slowloris.
+- **Per-item batch results.** Partial batches return 207 with every non-accepted item listed by request index and a `retryable` flag, so clients resend exactly the Kafka failures and not the invalid items.
+- **Key rotation without restarts.** The key file is polled by content hash (Kubernetes swaps a symlink, which defeats mtime and inotify) and reloaded on SIGHUP. A missing, empty or malformed file keeps the current keys.
 - **Shutdown ordering.** Readiness fails → sleep past probe period → `srv.Shutdown()` drains in-flight HTTP requests → Kafka producer flushes. This ordering ensures no record is produced after the flush.
 
 **Files:**
@@ -35,11 +38,12 @@ Kafka produce acknowledgements and processor offset commits are used as durabili
 | File | Purpose |
 |------|---------|
 | `cmd/server/main.go` | Wiring, middleware registration, shutdown |
-| `internal/handler/ingest.go` | Single and batch ingestion with 207 partial |
+| `internal/handler/ingest.go` | Single and batch ingestion; 202/207/400/429/503 contract; `Publisher` and `Quota` interfaces |
 | `internal/handler/health.go` | Liveness + readiness with drain support |
 | `internal/producer/kafka.go` | Synchronous produce with error classification |
-| `internal/middleware/auth.go` | SHA-256 API-key auth |
-| `internal/middleware/tenant.go` | Per-tenant rate limiting |
+| `internal/middleware/auth.go` | SHA-256 API-key auth with fail-safe hot reload |
+| `internal/middleware/tenant.go` | Per-tenant token buckets (requests and metrics) |
+| `internal/middleware/limits.go` | Request body limit |
 | `internal/validator/metric.go` | Name, tag, host, timestamp validation |
 
 ### Rust Processor (`processor/`)
@@ -51,6 +55,10 @@ Kafka produce acknowledgements and processor offset commits are used as durabili
 - **Per-partition batching with commit-after-write.** Rows accumulate in a per-partition `PartitionBatch`. On flush, all rows are written to ClickHouse *and the write must succeed* before any offset is committed. If the write fails, offsets stay put and Kafka replays the messages.
 - **A failed flush pauses consumption.** The consumer retains its in-memory batch and retries on its flush timer. Kafka lag grows while ClickHouse is unavailable.
 - **Retry with jittered exponential backoff.** Three replicas all failing on the same ClickHouse outage use jitter to avoid synchronized retry storms.
+- **Errors classified by ClickHouse exception code.** Only row-level data rejections (parse, type and range codes) are treated as permanent, which isolates the row and routes it to the DLQ. Overload (`TOO_MANY_PARTS`, memory limit), schema problems, auth failures and timeouts all retry with offsets uncommitted. The list is an allowlist: an unknown code retries, because a wrong retry costs latency while a wrong DLQ costs data.
+- **Every request has a deadline.** Inserts and readiness checks are bounded (`PROCESSOR_CLICKHOUSE_TIMEOUT_MS`), so a half-open connection becomes a retryable error instead of a frozen consumer.
+- **Rebalance-safe commits.** A consumer context records revoked partitions. Before each flush the loop releases buffered records for partitions it no longer owns, and it only commits partitions in its current assignment. The broker does not check ownership on OffsetCommit, so without this a late commit could rewind the new owner.
+- **End-to-end freshness.** `pipeline_end_to_end_lag_seconds` measures each record from Kafka CreateTime (ingestor acceptance) to its offset commit. `processor_last_commit_timestamp_seconds` covers the case where commits stop and the histogram goes silent.
 - **LRU-bounded detector state.** Detector baselines are keyed by `tenant|name|host` in an LRU cache. Evictions are exported as `processor_detector_evictions_total`.
 - **DLQ with error context.** Unparseable payloads go to `metrics.dlq` with headers carrying the reason, source partition, source offset, and timestamp. The `dlq_events` table is currently schema-only.
 
@@ -63,7 +71,7 @@ Kafka produce acknowledgements and processor offset commits are used as durabili
 | `src/storage/clickhouse.rs` | Writer with circuit breaker and retry |
 | `src/dlq.rs` | Dead-letter producer |
 | `src/detector/ewma.rs` | EWMA with flat-baseline fallback |
-| `src/detector/zscore.rs` | Rolling Z-score |
+| `src/detector/zscore.rs` | Rolling Z-score: score-before-insert, Welford sliding window, flat-baseline fallback |
 | `src/detector/registry.rs` | LRU-bounded detector state |
 | `src/model.rs` | MetricRow, AlertRow, data types |
 | `src/config.rs` | Env-var configuration |
@@ -111,7 +119,9 @@ Kafka produce acknowledgements and processor offset commits are used as durabili
 | Circuit breaker pauses consumer | Lag grows during outages | No silent data deletion |
 | `ProduceSync` instead of async | One broker round-trip per batch | 202 means "in Kafka" |
 | LRU detector cache | Evicted series lose their baseline | Bounded memory |
-| Per-process rate limiter | N replicas = N × the configured limit | No Redis dependency |
+| Per-process rate limiter | N replicas = N × the configured limit | No shared-state dependency on the hot path |
+| Error-code allowlist for "permanent" | An unrecognised data error retries until an operator looks | Overload and misconfiguration never route good rows to the DLQ |
+| Alerts published before the offset commit | A crash can re-publish an alert | Detection is not delayed by the ClickHouse write; `alert.id` is stable for dedup |
 | `ReplacingMergeTree` dedup | Queries need `FINAL` or aggregation | No transaction coordinator |
 
 ## Known Limitations
@@ -121,6 +131,8 @@ Kafka produce acknowledgements and processor offset commits are used as durabili
 - **Detector state is in-process.** Lost on restart or rebalance; baselines warm up again.
 - **Per-process rate limiter.** Not distributed. N replicas = N × the limit.
 - **No ClickHouse row policy.** Tenant IDs are stored, but query isolation must be provided by a separate access layer.
-- **No end-to-end freshness metric or benchmark results are checked in.**
+- **No sustained-throughput benchmark results are checked in.** Freshness is now measured in production (`pipeline_end_to_end_lag_seconds`) but there is no recorded load-test run.
+- **Alert fan-out is at-least-once.** Consumers of `alerts.fired` should deduplicate on the `alert.id` header.
+- **SDK retries are not idempotent.** A client resend after a lost 202 creates a new Kafka record, which ClickHouse does not collapse.
 - **Rollup replay sensitivity.** The materialized views can count duplicate source replays even when raw table reads use `FINAL`.
 - **No exactly-once.** ClickHouse cannot participate in Kafka transactions. At-least-once + idempotent writes give effectively-once at rest.

@@ -1,0 +1,55 @@
+# Changelog
+
+## 2.1.0 — hardening pass
+
+### Fixed (correctness)
+- **Processor routed healthy rows to the DLQ on transient ClickHouse errors.**
+  Every `DB::Exception` was treated as permanent, including `TOO_MANY_PARTS`,
+  `MEMORY_LIMIT_EXCEEDED`, `UNKNOWN_TABLE` and `AUTHENTICATION_FAILED`. Errors
+  are now classified by exception code against an allowlist of row-level
+  data errors.
+- **A hung ClickHouse connection could freeze the consumer.** Inserts and
+  readiness checks now have deadlines.
+- **Offsets could be committed for partitions this member no longer owned**
+  after a rebalance. Revoked partitions' batches are released; commits are
+  restricted to the current assignment.
+- **The Z-score detector could not fire with small windows.** It scored values
+  against a baseline that already contained them (max 2.85σ at n=10). It also
+  lost precision on large values and ignored flat baselines.
+- **Ingestor readiness outlived the drain delay** in the Helm chart (30s vs
+  15s), so rolling restarts could send traffic to a pod that had stopped
+  accepting.
+- **Helm chart did not validate** (null Service port; Prometheus mounted a
+  ConfigMap and PVC the chart never created; `clickhouseUrl` had a path, so
+  every insert would 404).
+- **Go SDK could not work against an authenticated ingestor** and dropped
+  every gauge (unit `"gauge"` is rejected by the validator).
+- `pipeline:anomaly_rate:ratio5m` recording rule was always empty.
+- Prometheus scraped two targets that could never be up.
+
+### Added
+- `pipeline_end_to_end_lag_seconds`, last-commit timestamp, rebalance and
+  timeout metrics; freshness and stalled-commit alerts with promtool tests;
+  Grafana freshness panels; freshness runbook.
+- Per-tenant metrics-per-second quota, `Retry-After` on 429, 413 body limit,
+  per-item batch errors with a `retryable` flag.
+- API key hot reload (content polling + SIGHUP), fail-safe on bad files.
+- Tag key charset and control-character validation.
+- Replay-stable `alert.id` header on alerts; idempotent alert producer.
+- SDK: API key, retry/backoff honouring the 207 contract and Retry-After,
+  bounded buffer, `Stats()`, `InstrumentRoute`.
+- Helm: ServiceMonitor, PrometheusRule, ServiceAccount, render-time guards.
+- CI: SDK tests, rule tests, kubeconform validation, guard tests, pinned
+  scanners, least-privilege permissions.
+
+### Removed
+- Unwired code and infrastructure: TCP/JSON "gRPC" server, Redis cache and
+  its Terraform ElastiCache cluster, proto, Kafka Connect, Schema Registry,
+  stale `k8s/` manifests, Bitnami subcharts, the in-chart monitoring stack.
+
+### Changed (compatibility)
+- Go module path is now `github.com/KevinKattakayam/datadog/...`.
+- `processor_anomalies_detected_total` labels are `detector, severity`
+  (was `metric, severity`; metric names are client-controlled).
+- A batch containing invalid items now returns `207` (was `202` with a
+  `skipped` count).

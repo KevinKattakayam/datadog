@@ -1,0 +1,30 @@
+# Throughput benchmark 20261004-014010
+# rate=8000/s  duration=60s  runs=3  batch=100  url=http://localhost:8080/ingest/batch
+
+## Host
+Linux 6.8.0-64-generic x86_64
+CPU(s):                               8
+Model name:                           11th Gen Intel(R) Core(TM) i5-1135G7 @ 2.40GHz
+               total        used        free      shared  buff/cache   available
+Mem:           7.4Gi       5.3Gi       246Mi       497Mi       2.6Gi       2.1Gi
+docker server=29.8.1
+commit=e7ceae7
+
+## Runs
+run   metrics/sec    p50_ms    p95_ms    p99_ms  errors   drain_s
+1            7999       4.2       5.4       7.1       0         0
+2            7999       4.0       4.9       6.7       0         0
+3            7999       4.0       4.9       6.6       0         0
+
+## Median of 3 runs
+throughput_metrics_per_sec=7999.0  (requested 8000)
+latency_p50_ms=4.0
+latency_p95_ms=4.9
+latency_p99_ms=6.7
+drain_seconds=0.0
+min_throughput=7999  max_throughput=7999
+
+## Notes
+Latency is per ingest request (a batch of 100), measured by the load generator.
+drain_seconds is how long the processor needed to clear the Kafka backlog after the run.
+If throughput is well below the requested rate, the stack was saturated at this rate.

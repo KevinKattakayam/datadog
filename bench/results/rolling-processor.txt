@@ -1,0 +1,22 @@
+bash bench/chaos/rolling_restart_no_loss.sh
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Chaos Test: graceful restart of processor under load
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Metrics to send:  20000
+  Rate:             1000/sec
+  Restart after:    3s (docker restart -t 30)
+
+▸ Sending 20000 numbered metrics at 1000/sec...
+▸ Waiting 3s, then restarting obs-processor...
+▸ obs-processor restarted in 1s
+▸ Waiting for load generator to finish...
+▸ Waiting for consumer lag to reach zero...
+  Lag reached zero after 0s
+
+▸ Verifying results...
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  target=processor  sent=20000  unique=20000  rows=20000  dupes=0  client_retries=0  restart_seconds=1  drain_seconds=0
+  ✓ PASSED — zero data loss across a graceful restart
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

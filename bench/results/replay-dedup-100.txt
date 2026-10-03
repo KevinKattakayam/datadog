@@ -1,0 +1,5 @@
+# Command: make chaos-replay
+# Crash injected with PROCESSOR_FAILPOINT=after_write_before_commit
+# Date: 2026-10-04. Host: see env.txt. Single run. Transcribed from terminal output.
+sent=100 physical=200 final=100 gaps=0
+exit=0

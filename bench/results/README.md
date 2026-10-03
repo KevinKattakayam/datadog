@@ -35,3 +35,12 @@ After restart: 20,000 sent, 20,000 unique, 20,000 rows, 0 duplicates, 10s
 recovery. Single run on the host in [env.txt](env.txt); not a repeated-run
 median. This run did not hit the write-before-commit window, so it does not
 exercise duplicate replay; see `make chaos-replay` for that.
+
+## Replay deduplication (2026-10-04)
+
+`make chaos-replay` ([raw output](replay-dedup-100.txt)). The processor is
+crashed on purpose after the ClickHouse write and before the Kafka commit.
+Result: 100 sent, 200 physical rows (every row replayed once), 100 rows under
+`FINAL`, 0 offset gaps. Duplicates stay in the raw table until a background
+merge, so queries must use `FINAL` or `GROUP BY`. Single deterministic run
+with a failpoint, not a random crash.

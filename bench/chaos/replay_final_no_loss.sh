@@ -21,7 +21,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-PROCESSOR_FAILPOINT=after_write_before_commit docker compose up -d --build --force-recreate processor >/dev/null
+PROCESSOR_FAILPOINT=after_write_before_commit docker compose up -d --force-recreate processor >/dev/null
 sleep 3
 
 metrics=""

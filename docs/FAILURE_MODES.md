@@ -42,7 +42,7 @@ Every component in the pipeline can fail. This document describes what happens w
 | **User sees** | Consumer lag spike. |
 | **Data loss** | **Zero.** On restart, the consumer resumes from the last committed offset and replays the lost messages. `ReplacingMergeTree` deduplicates any rows that were written but whose commit didn't land. |
 | **Recovery** | Automatic. Lag drains at normal processing rate. |
-| **Verification** | `make chaos-kill9` is intended to send numbered metrics, kill the processor, and assert that every accepted metric appears after recovery. This script has not yet been run in this environment. |
+| **Verification** | `make chaos-kill9` is intended to send numbered metrics, kill the processor, and assert that every accepted metric appears after recovery. Results are recorded in [bench/results](../bench/results/README.md). |
 
 ### Processor graceful shutdown (`SIGTERM`)
 

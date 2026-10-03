@@ -15,6 +15,10 @@
 #                    during the restart fail and the load generator
 #                    retries them. This checks that nothing the ingestor
 #                    ACCEPTED is lost and that retried batches recover.
+#                    Requests are paced evenly, so the restart gap (well
+#                    under a second) is always crossed and client_retries
+#                    should be at least 1. If it is 0 the retry path was
+#                    not exercised and the run proves less than it appears.
 #                    It does NOT prove zero client-visible errors; that
 #                    needs two or more replicas behind a Service, which
 #                    only Kubernetes provides.
@@ -94,6 +98,12 @@ kafka_lag() {
 fire_metrics() {
     local total_batches=$((SENT / BATCH_SIZE))
     local batches_per_sec=$((RATE / BATCH_SIZE))
+    # Spread requests evenly (one every 1/batches_per_sec seconds) instead of
+    # a burst followed by a long sleep. A burst-then-sleep pattern leaves
+    # nothing in flight most of the time, so a sub-second outage during the
+    # restart is crossed only by chance and the retry path goes untested.
+    local pace
+    pace=$(awk -v n="$batches_per_sec" 'BEGIN { printf "%.3f", 1 / n }')
     local retries=0
     local batch_num=0
     local ts
@@ -124,9 +134,7 @@ fire_metrics() {
         done
 
         batch_num=$((batch_num + 1))
-        if [ $((batch_num % batches_per_sec)) -eq 0 ]; then
-            sleep 1
-        fi
+        sleep "$pace"
     done
     echo "retries=$retries failed=0" > "$STATS_FILE"
 }

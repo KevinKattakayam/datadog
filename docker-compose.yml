@@ -30,6 +30,8 @@ services:
       KAFKA_LOG_SEGMENT_BYTES: 1073741824
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
       CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      # Pin the heap: unset, the broker uses 1G inside a 1G container and is OOM-killed under sustained load.
+      KAFKA_HEAP_OPTS: "-Xms512M -Xmx512M"
     volumes:
       - kafka-data:/var/lib/kafka/data
     networks:

@@ -19,7 +19,7 @@ Every component in the pipeline can fail. This document describes what happens w
 | Aspect | Behaviour |
 |--------|-----------|
 | **What happens** | Readiness fails (draining=true), sleep past probe period, HTTP server drains, Kafka producer flushes. |
-| **User sees** | Zero 5xx responses if `terminationGracePeriodSeconds` exceeds drain + shutdown budget (45s). |
+| **User sees** | Zero 5xx responses, provided the pod leaves the Service before it stops accepting. The chart enforces this at render time: `drainDelaySeconds` (15) must be at least readiness `periodSeconds × failureThreshold` (5 × 2), and `terminationGracePeriodSeconds` (45) must exceed the drain plus the 25s HTTP shutdown. The previous probe settings (10 × 3 = 30s) were longer than the 15s drain. |
 | **Data loss** | None. |
 | **Recovery** | Automatic. |
 
@@ -68,9 +68,27 @@ Every component in the pipeline can fail. This document describes what happens w
 | Aspect | Behaviour |
 |--------|-----------|
 | **What happens** | Write latency increases. Retries with backoff. Flush takes longer, lag grows. |
-| **User sees** | Kafka consumer lag and ClickHouse write latency increase; `KafkaConsumerLagHigh` or `ClickHouseWriteLatencyHigh` may fire. No end-to-end freshness metric is currently exported. |
-| **Data loss** | None, unless `max.poll.interval.ms` (300s) is exceeded and the broker evicts the consumer. |
+| **User sees** | Kafka consumer lag and ClickHouse write latency increase. `PipelineFreshnessSlow` fires when p99 ingest-to-queryable exceeds 60s, and `ClickHouseRequestTimeouts` fires if inserts hit the request deadline. |
+| **Data loss** | None. Each insert is bounded by `PROCESSOR_CLICKHOUSE_TIMEOUT_MS`, so the worst-case flush (attempts × timeout + backoff) stays under `max.poll.interval.ms` (300s). If a consumer is evicted anyway, its uncommitted batch is released and replayed by the new owner. |
 | **Recovery** | Automatic when latency returns to normal, or scale ClickHouse. |
+
+### ClickHouse overloaded (`TOO_MANY_PARTS`, memory limit) or misconfigured (missing table, bad credentials)
+
+| Aspect | Behaviour |
+|--------|-----------|
+| **What happens** | The exception code is classified as retryable. The batch retries with backoff and the circuit breaker may open; offsets stay uncommitted. |
+| **User sees** | Lag grows; `ProcessorCommitStalled` fires after two minutes without a commit. |
+| **Data loss** | None. Before this classification, every `DB::Exception` counted as permanent, so the batch was bisected and each row routed to the DLQ. |
+| **Recovery** | Automatic once ClickHouse catches up on merges, or after the operator applies the migration or fixes the Secret. |
+
+### Consumer group rebalance mid-batch
+
+| Aspect | Behaviour |
+|--------|-----------|
+| **What happens** | The rebalance callback records revoked partitions. Before its next write, the processor releases their uncommitted records and commits only partitions it still owns. |
+| **User sees** | `processor_rebalance_events_total` and `processor_revoked_records_dropped_total` increase. |
+| **Data loss** | None. The new owner replays from the last commit; rows already written collapse under `FINAL`. |
+| **Recovery** | Automatic. |
 
 ### Poison message (unparseable payload)
 

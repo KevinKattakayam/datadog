@@ -4,7 +4,9 @@
 package middleware
 
 import (
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +16,10 @@ import (
 
 // TenantExtractor extracts the tenant ID from the X-Tenant-ID header.
 // If the header is missing, it defaults to DefaultTenantID ("default").
+//
+// NOT for production routing: the header is client-controlled. The server
+// derives tenant identity from the API key (see APIKeyAuth). This exists for
+// tests and for trusted internal hops only.
 func TenantExtractor() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		tenantID := c.GetHeader(TenantHeaderKey)
@@ -50,11 +56,16 @@ type TenantConfig struct {
 }
 
 // TenantRateLimiter provides per-tenant rate limiting using token buckets.
+// The same type serves two purposes with different units: requests per
+// second (middleware) and metrics per second (quota, charged per batch item).
 type TenantRateLimiter struct {
 	mu         sync.RWMutex
 	buckets    map[string]*tokenBucket
 	configs    map[string]TenantConfig
 	defaultRPS int
+	// burst is the bucket capacity. For a metrics quota it must be at least
+	// the maximum batch size, or a full batch could never be admitted.
+	burst int
 }
 
 type tokenBucket struct {
@@ -65,38 +76,58 @@ type tokenBucket struct {
 	lastRefill time.Time
 }
 
-func newTokenBucket(rps int) *tokenBucket {
+func newTokenBucket(rate, burst int) *tokenBucket {
 	return &tokenBucket{
-		tokens:     float64(rps),
-		maxTokens:  float64(rps),
-		refillRate: float64(rps),
+		tokens:     float64(burst),
+		maxTokens:  float64(burst),
+		refillRate: float64(rate),
 		lastRefill: time.Now(),
 	}
 }
 
-func (tb *tokenBucket) allow() bool {
+// take removes n tokens if available. Otherwise it removes nothing and
+// reports how long until n tokens will be available, for Retry-After.
+// All state is mutated under tb.mu: the original version mutated tokens
+// outside any lock, a data race under concurrent requests for one tenant.
+func (tb *tokenBucket) take(n int) (bool, time.Duration) {
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
 
 	now := time.Now()
 	elapsed := now.Sub(tb.lastRefill).Seconds()
-	tb.tokens += elapsed * tb.refillRate
-	if tb.tokens > tb.maxTokens {
-		tb.tokens = tb.maxTokens
-	}
+	tb.tokens = math.Min(tb.maxTokens, tb.tokens+elapsed*tb.refillRate)
 	tb.lastRefill = now
 
-	if tb.tokens >= 1 {
-		tb.tokens--
-		return true
+	need := float64(n)
+	if tb.tokens >= need {
+		tb.tokens -= need
+		return true, 0
 	}
-	return false
+	if need > tb.maxTokens || tb.refillRate <= 0 {
+		// Can never be satisfied by waiting; caller should split the batch.
+		return false, -1
+	}
+	wait := (need - tb.tokens) / tb.refillRate
+	return false, time.Duration(wait * float64(time.Second))
 }
 
-// NewTenantRateLimiter creates a multi-tenant rate limiter.
+// NewTenantRateLimiter creates a multi-tenant request-rate limiter whose
+// burst equals its per-second rate.
 func NewTenantRateLimiter(defaultRPS int, configs map[string]TenantConfig) *TenantRateLimiter {
 	if defaultRPS <= 0 {
 		defaultRPS = DefaultTenantRPS
+	}
+	return NewTenantQuota(defaultRPS, defaultRPS, configs)
+}
+
+// NewTenantQuota creates a per-tenant limiter with an explicit burst
+// capacity. Use it for metrics-per-second quotas: burst >= max batch size.
+func NewTenantQuota(ratePerSec, burst int, configs map[string]TenantConfig) *TenantRateLimiter {
+	if ratePerSec <= 0 {
+		ratePerSec = DefaultTenantRPS
+	}
+	if burst < ratePerSec {
+		burst = ratePerSec
 	}
 	if configs == nil {
 		configs = make(map[string]TenantConfig)
@@ -104,7 +135,8 @@ func NewTenantRateLimiter(defaultRPS int, configs map[string]TenantConfig) *Tena
 	return &TenantRateLimiter{
 		buckets:    make(map[string]*tokenBucket),
 		configs:    configs,
-		defaultRPS: defaultRPS,
+		defaultRPS: ratePerSec,
+		burst:      burst,
 	}
 }
 
@@ -122,14 +154,37 @@ func (trl *TenantRateLimiter) getBucket(tenantID string) *tokenBucket {
 	defer trl.mu.Unlock()
 	// Double-check after acquiring write lock
 	if bucket, exists = trl.buckets[tenantID]; !exists {
-		rps := trl.defaultRPS
-		if cfg, ok := trl.configs[tenantID]; ok {
-			rps = cfg.MaxRPS
+		rate, burst := trl.defaultRPS, trl.burst
+		if cfg, ok := trl.configs[tenantID]; ok && cfg.MaxRPS > 0 {
+			rate = cfg.MaxRPS
+			if burst < rate {
+				burst = rate
+			}
 		}
-		bucket = newTokenBucket(rps)
+		bucket = newTokenBucket(rate, burst)
 		trl.buckets[tenantID] = bucket
 	}
 	return bucket
+}
+
+// AllowN charges n units to the tenant. When refused, retryAfter is the time
+// until the request could succeed, or negative if it never can (n > burst).
+func (trl *TenantRateLimiter) AllowN(tenantID string, n int) (bool, time.Duration) {
+	if n <= 0 {
+		return true, 0
+	}
+	return trl.getBucket(tenantID).take(n)
+}
+
+// SetRetryAfter writes a Retry-After header, rounded up to whole seconds
+// (the header has one-second resolution; rounding down invites a retry
+// storm that is refused again).
+func SetRetryAfter(c *gin.Context, d time.Duration) {
+	secs := int(math.Ceil(d.Seconds()))
+	if secs < 1 {
+		secs = 1
+	}
+	c.Header("Retry-After", strconv.Itoa(secs))
 }
 
 // TenantRateLimit returns gin middleware that applies per-tenant rate limiting.
@@ -152,8 +207,10 @@ func TenantRateLimit(limiter *TenantRateLimiter) gin.HandlerFunc {
 			return
 		}
 
-		bucket := limiter.getBucket(tid)
-		if !bucket.allow() {
+		ok, wait := limiter.getBucket(tid).take(1)
+		if !ok {
+			rateLimited.WithLabelValues("requests").Inc()
+			SetRetryAfter(c, wait)
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
 				"error":  "tenant rate limit exceeded",
 				"tenant": tid,

@@ -1,0 +1,19 @@
+{{- if .Values.prometheusRule.enabled }}
+# Rules are the same files Compose loads (infra/prometheus), copied into
+# files/rules by `make helm-sync-rules`; CI fails if the copies drift.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "obs.fullname" . }}
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "obs.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+{{- range $path, $_ := .Files.Glob "files/rules/*.yml" }}
+{{ regexReplaceAll "(?s)^.*?\ngroups:\n" ($.Files.Get $path) "" | indent 2 }}
+{{- end }}
+{{- end }}

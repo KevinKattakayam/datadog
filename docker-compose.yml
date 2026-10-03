@@ -93,6 +93,7 @@ services:
       - clickhouse-data:/var/lib/clickhouse
       - ./infra/clickhouse/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
       - ./infra/clickhouse/init.sh:/docker-entrypoint-initdb.d/00-init.sh:ro
+      - ./infra/clickhouse/config.d/prometheus.xml:/etc/clickhouse-server/config.d/prometheus.xml:ro
     environment:
       CLICKHOUSE_DB: observability
       CLICKHOUSE_USER: default
@@ -214,7 +215,6 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       KAFKA_TOPIC_RAW: metrics.raw
       INGESTOR_PORT: "8080"
-      INGESTOR_GRPC_PORT: "50051"
       INGESTOR_LOG_LEVEL: info
       INGESTOR_BATCH_SIZE: "500"
       INGESTOR_FLUSH_INTERVAL_MS: "100"

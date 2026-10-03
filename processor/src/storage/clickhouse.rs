@@ -6,6 +6,7 @@
 // with the caller, which is the only thing that can decide not to commit.
 
 use anyhow::{anyhow, Result};
+use clickhouse::error::Error as ChError;
 use clickhouse::Client;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::time::{Duration, Instant};
@@ -13,28 +14,56 @@ use tracing::{error, info, warn};
 
 use crate::model::{AlertRow, MetricRow};
 
-/// ClickHouse rejects malformed rows with a 4xx response and a DB::Exception
-/// message. Retrying that exact input cannot recover, while transport errors,
-/// timeouts, and a circuit-open response can. Keep this deliberately narrow:
-/// an unrecognised error remains retryable so a transient failure never causes
-/// a source record to be discarded.
-pub fn is_permanent_clickhouse_error(error: &anyhow::Error) -> bool {
-    let message = error.to_string().to_ascii_lowercase();
-    if message.contains("timeout")
-        || message.contains("connection")
-        || message.contains("network")
-        || message.contains("circuit open")
-        || message.contains("temporar")
-    {
-        return false;
-    }
+/// ClickHouse exception codes that mean "this exact input can never be
+/// inserted": parse/type/range failures on a row's data. Everything else —
+/// TOO_MANY_PARTS (252), MEMORY_LIMIT_EXCEEDED (241), TABLE_IS_READ_ONLY
+/// (242), TIMEOUT_EXCEEDED (159), UNKNOWN_TABLE (60), missing columns (16/47),
+/// AUTHENTICATION_FAILED (516), ACCESS_DENIED (497) — is an operational state
+/// that heals or is fixed by an operator. Treating those as permanent would
+/// bisect the batch and route every healthy row to the DLQ.
+///
+/// The list is deliberately an allowlist: an unknown code retries, because a
+/// wrong "retry" costs latency while a wrong "permanent" costs customer data.
+pub const PERMANENT_EXCEPTION_CODES: &[u32] = &[
+    6,   // CANNOT_PARSE_TEXT
+    26,  // CANNOT_PARSE_QUOTED_STRING
+    27,  // CANNOT_PARSE_INPUT_ASSERTION_FAILED
+    38,  // CANNOT_PARSE_DATE
+    41,  // CANNOT_PARSE_DATETIME
+    43,  // ILLEGAL_TYPE_OF_ARGUMENT
+    53,  // TYPE_MISMATCH
+    69,  // ARGUMENT_OUT_OF_BOUND
+    70,  // CANNOT_CONVERT_TYPE
+    72,  // CANNOT_PARSE_NUMBER
+    117, // INCORRECT_DATA
+    131, // TOO_LARGE_STRING_SIZE
+    321, // VALUE_IS_OUT_OF_RANGE_OF_DATA_TYPE
+    349, // CANNOT_INSERT_NULL_IN_ORDINARY_COLUMN
+    469, // VIOLATED_CONSTRAINT
+];
 
-    message.contains("db::exception")
-        || message.contains("unknown column")
-        || message.contains("cannot parse")
-        || message.contains("cannot convert")
-        || message.contains("type mismatch")
-        || message.contains("invalid")
+/// Classify a writer error as permanent (isolate the row, DLQ it) or
+/// retryable (leave offsets uncommitted, retry, let Kafka buffer).
+pub fn is_permanent_clickhouse_error(error: &anyhow::Error) -> bool {
+    match error.downcast_ref::<ChError>() {
+        // Client-side serialisation of a single row is deterministic.
+        Some(ChError::SequenceMustHaveLength)
+        | Some(ChError::InvalidUtf8Encoding(_))
+        | Some(ChError::Custom(_)) => true,
+        Some(ChError::BadResponse(message)) => exception_code(message)
+            .map(|code| PERMANENT_EXCEPTION_CODES.contains(&code))
+            .unwrap_or(false),
+        // Network, timeout, compression, circuit-open, or anything unknown.
+        _ => false,
+    }
+}
+
+/// Extract `N` from ClickHouse's `Code: N. DB::Exception: ...` body.
+pub fn exception_code(message: &str) -> Option<u32> {
+    let start = message.find("Code: ")? + "Code: ".len();
+    let rest = &message[start..];
+    let end = rest.find(|c: char| !c.is_ascii_digit())?;
+    rest[..end].parse().ok()
 }
 
 // ── Circuit Breaker ──────────────────────────────────────────
@@ -193,6 +222,9 @@ pub struct ClickHouseWriter {
     circuit_breaker: CircuitBreaker,
     max_attempts: u32,
     base_retry_ms: u64,
+    /// Upper bound on one INSERT round-trip. Without it a half-open TCP
+    /// connection parks the consumer loop forever while lag grows silently.
+    request_timeout: Duration,
 }
 
 impl ClickHouseWriter {
@@ -203,6 +235,7 @@ impl ClickHouseWriter {
         username: &str,
         password: &str,
         max_attempts: u32,
+        request_timeout: Duration,
     ) -> Result<Self> {
         let client = Client::default()
             .with_url(url)
@@ -228,6 +261,7 @@ impl ClickHouseWriter {
             circuit_breaker,
             max_attempts,
             base_retry_ms: 200,
+            request_timeout,
         })
     }
 
@@ -327,33 +361,63 @@ impl ClickHouseWriter {
         }
     }
 
-    /// Insert metric rows using ClickHouse inserter.
+    /// Insert metric rows, bounded by the request timeout.
     async fn insert_metrics(&self, rows: &[MetricRow]) -> Result<()> {
-        let mut insert = self.client.insert("metrics")?;
-        for row in rows {
-            insert.write(row).await?;
-        }
-        insert.end().await?;
-        Ok(())
+        self.bounded("metrics", async {
+            let mut insert = self.client.insert("metrics")?;
+            for row in rows {
+                insert.write(row).await?;
+            }
+            insert.end().await?;
+            Ok(())
+        })
+        .await
     }
 
-    /// Insert alert rows using ClickHouse inserter.
+    /// Insert alert rows, bounded by the request timeout.
     async fn insert_alerts(&self, rows: &[AlertRow]) -> Result<()> {
-        let mut insert = self.client.insert("alerts")?;
-        for row in rows {
-            insert.write(row).await?;
-        }
-        insert.end().await?;
-        Ok(())
+        self.bounded("alerts", async {
+            let mut insert = self.client.insert("alerts")?;
+            for row in rows {
+                insert.write(row).await?;
+            }
+            insert.end().await?;
+            Ok(())
+        })
+        .await
     }
 
-    /// True readiness: can we reach the table we actually write to?
+    /// Run one ClickHouse round-trip with a deadline. A timeout is surfaced as
+    /// `ChError::TimedOut`, which the classifier treats as retryable. Dropping
+    /// the future aborts the HTTP request, so ClickHouse never commits a
+    /// half-sent block; if it did commit, the replay deduplicates on the
+    /// Kafka coordinates in the sort key.
+    async fn bounded<F>(&self, table: &str, op: F) -> Result<()>
+    where
+        F: std::future::Future<Output = Result<()>>,
+    {
+        match tokio::time::timeout(self.request_timeout, op).await {
+            Ok(result) => result,
+            Err(_) => {
+                crate::metrics::CLICKHOUSE_TIMEOUTS.inc();
+                warn!(
+                    table,
+                    timeout_ms = self.request_timeout.as_millis() as u64,
+                    "clickhouse insert timed out"
+                );
+                Err(anyhow::Error::new(ChError::TimedOut))
+            }
+        }
+    }
+
+    /// True readiness: can we reach the table we actually write to? Bounded
+    /// so a stuck ClickHouse makes the probe fail instead of hang.
     pub async fn health_check(&self) -> bool {
-        self.client
-            .query("SELECT 1 FROM metrics LIMIT 0")
-            .execute()
-            .await
-            .is_ok()
+        let probe = self.client.query("SELECT 1 FROM metrics LIMIT 0").execute();
+        matches!(
+            tokio::time::timeout(Duration::from_secs(2), probe).await,
+            Ok(Ok(()))
+        )
     }
 
     /// Get the current circuit breaker state name.
@@ -437,25 +501,84 @@ mod tests {
         assert_eq!(cb.state_name(), "open");
     }
 
-    #[test]
-    fn classifies_clickhouse_schema_rejection_as_permanent() {
-        let error = anyhow!("bad response: Code: 47. DB::Exception: Unknown column tenant_id");
-        assert!(is_permanent_clickhouse_error(&error));
+    fn bad_response(body: &str) -> anyhow::Error {
+        anyhow::Error::new(ChError::BadResponse(body.to_string()))
     }
 
     #[test]
-    fn keeps_transport_failures_retryable() {
-        let error = anyhow!("connection refused while writing ClickHouse batch");
-        assert!(!is_permanent_clickhouse_error(&error));
+    fn parses_exception_code() {
+        assert_eq!(
+            exception_code("Code: 252. DB::Exception: Too many parts"),
+            Some(252)
+        );
+        assert_eq!(
+            exception_code("bad response: Code: 6. DB::Exception: x"),
+            Some(6)
+        );
+        assert_eq!(exception_code("no code here"), None);
     }
 
-    #[tokio::test]
-    async fn write_metrics_returns_error_after_configured_attempts_and_keeps_rows() {
-        // Port 1 has no listener in the test environment. The caller owns the
-        // slice, so a failed writer must return an error without mutating it.
-        let writer =
-            ClickHouseWriter::new("http://127.0.0.1:1", "observability", "default", "", 2).unwrap();
-        let rows = vec![MetricRow {
+    #[test]
+    fn row_data_rejection_is_permanent() {
+        let e = bad_response("Code: 27. DB::Exception: Cannot parse input: expected '\"'");
+        assert!(is_permanent_clickhouse_error(&e));
+    }
+
+    #[test]
+    fn overload_is_retryable_not_dlq() {
+        // The bug this guards: every DB::Exception used to count as permanent,
+        // so a merge backlog sent the whole batch to the DLQ row by row.
+        for body in [
+            "Code: 252. DB::Exception: Too many parts (300). Merges are processing significantly slower than inserts. (TOO_MANY_PARTS)",
+            "Code: 241. DB::Exception: Memory limit (total) exceeded. (MEMORY_LIMIT_EXCEEDED)",
+            "Code: 242. DB::Exception: Table is in readonly mode. (TABLE_IS_READ_ONLY)",
+            "Code: 159. DB::Exception: Timeout exceeded. (TIMEOUT_EXCEEDED)",
+        ] {
+            assert!(!is_permanent_clickhouse_error(&bad_response(body)), "{body}");
+        }
+    }
+
+    #[test]
+    fn schema_and_auth_problems_are_retryable() {
+        // An operator fixes these with a migration or a Secret; the rows are fine.
+        for body in [
+            "Code: 47. DB::Exception: Unknown column tenant_id",
+            "Code: 16. DB::Exception: No such column tenant_id in table",
+            "Code: 60. DB::Exception: Table observability.metrics does not exist. (UNKNOWN_TABLE)",
+            "Code: 516. DB::Exception: processor: Authentication failed. (AUTHENTICATION_FAILED)",
+            "Code: 497. DB::Exception: processor: Not enough privileges. (ACCESS_DENIED)",
+        ] {
+            assert!(
+                !is_permanent_clickhouse_error(&bad_response(body)),
+                "{body}"
+            );
+        }
+    }
+
+    #[test]
+    fn transport_and_unknown_errors_are_retryable() {
+        assert!(!is_permanent_clickhouse_error(&anyhow::Error::new(
+            ChError::TimedOut
+        )));
+        assert!(!is_permanent_clickhouse_error(&anyhow!(
+            "circuit open after 5 attempts"
+        )));
+        assert!(!is_permanent_clickhouse_error(&anyhow!(
+            "invalid something, but not a ClickHouse error"
+        )));
+        assert!(!is_permanent_clickhouse_error(&bad_response(
+            "HTTP 502 Bad Gateway"
+        )));
+    }
+
+    #[test]
+    fn client_side_serialisation_failure_is_permanent() {
+        let e = anyhow::Error::new(ChError::Custom("bad row".into()));
+        assert!(is_permanent_clickhouse_error(&e));
+    }
+
+    fn sample_row() -> MetricRow {
+        MetricRow {
             ts: 1_700_000_000_000,
             tenant_id: "tenant-a".to_string(),
             name: "test.metric".to_string(),
@@ -467,7 +590,52 @@ mod tests {
             is_anomaly: 0,
             kafka_partition: 1,
             kafka_offset: 42,
-        }];
+        }
+    }
+
+    #[tokio::test]
+    async fn silent_server_times_out_instead_of_hanging() {
+        // Accept TCP connections and never answer: the half-open case.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((sock, _)) = listener.accept().await {
+                held.push(sock);
+            }
+        });
+        let writer = ClickHouseWriter::new(
+            &format!("http://{addr}"),
+            "observability",
+            "default",
+            "",
+            1,
+            Duration::from_millis(200),
+        )
+        .unwrap();
+        let started = Instant::now();
+        let err = writer.write_metrics(&[sample_row()]).await.unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(5), "writer hung");
+        assert!(
+            !is_permanent_clickhouse_error(&err),
+            "timeout must be retryable"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_metrics_returns_error_after_configured_attempts_and_keeps_rows() {
+        // Port 1 has no listener in the test environment. The caller owns the
+        // slice, so a failed writer must return an error without mutating it.
+        let writer = ClickHouseWriter::new(
+            "http://127.0.0.1:1",
+            "observability",
+            "default",
+            "",
+            2,
+            Duration::from_secs(2),
+        )
+        .unwrap();
+        let rows = vec![sample_row()];
         let before = rows.clone();
 
         assert!(writer.write_metrics(&rows).await.is_err());

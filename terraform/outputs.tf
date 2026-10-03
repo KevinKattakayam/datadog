@@ -28,15 +28,7 @@ output "private_subnets" {
   value       = module.vpc.private_subnets
 }
 
-output "redis_endpoint" {
-  description = "ElastiCache Redis primary endpoint"
-  value       = aws_elasticache_replication_group.redis.primary_endpoint_address
-}
 
-output "redis_port" {
-  description = "ElastiCache Redis port"
-  value       = aws_elasticache_replication_group.redis.port
-}
 
 output "kubeconfig_command" {
   description = "Command to update kubeconfig"

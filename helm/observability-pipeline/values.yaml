@@ -1,25 +1,42 @@
 # ============================================================
-#  Helm Values — Observability Pipeline v2
-#  Override these values for different environments
+#  Helm Values — Observability Pipeline
+#
+#  This chart deploys the two services this repository builds: the Go
+#  ingestor and the Rust processor. Kafka, ClickHouse and the monitoring
+#  stack are external dependencies, by design:
+#
+#  - Stateful systems belong to their operators (Strimzi, Altinity
+#    clickhouse-operator) or managed services (MSK, ClickHouse Cloud), with
+#    their own upgrade, backup and scaling lifecycle.
+#  - Monitoring belongs to kube-prometheus-stack. This chart ships a
+#    ServiceMonitor and PrometheusRule for it instead of a private Prometheus.
+#
+#  Required before install (see README "Deploying to Kubernetes"):
+#    - Secret <ingestor.apiKeysSecret>       key: api-keys
+#    - Secret <processor.config.clickhouseCredentialsSecret>  keys: username, password
+#    - Kafka topics created with RF>=3, min.insync.replicas=2
 # ============================================================
 
 global:
   namespace: observability
-  environment: production
   imageRegistry: ""
   imagePullSecrets: []
+
+# Partition count of the raw topic. Consumers beyond this sit idle, so every
+# processor scaling bound is validated against it at render time.
+kafka:
+  rawTopicPartitions: 6
 
 # ── Go Ingestor ──────────────────────────────────────────────
 ingestor:
   replicaCount: 3
   image:
     repository: observability-pipeline/ingestor
-    tag: "2.0.0"
+    tag: "2.1.0"
     pullPolicy: IfNotPresent
   service:
     type: ClusterIP
     httpPort: 8080
-    metricsPort: 8080
   resources:
     requests:
       cpu: 250m
@@ -38,14 +55,24 @@ ingestor:
     kafkaTopicRaw: metrics.raw
     batchSize: 500
     flushIntervalMs: 100
+    # Per-tenant limits, per replica. With N replicas the cluster-wide limit
+    # is N times these; see docs/ARCHITECTURE.md trade-offs.
     rateLimitRPS: 10000
+    tenantMetricsPerSec: 50000
+    maxBodyMiB: 5
     logLevel: info
     apiKeysPath: /etc/secrets/api-keys
+    apiKeysReloadIntervalSeconds: 30
+    # Readiness must fail and the endpoint be removed before the server
+    # stops accepting: drainDelaySeconds >= readiness period x failureThreshold.
     drainDelaySeconds: 15
   apiKeysSecret: observability-api-keys
+  # drainDelay (15) + HTTP shutdown (<=25) + producer flush, with margin.
+  terminationGracePeriodSeconds: 45
   podSecurityContext:
     runAsNonRoot: true
     runAsUser: 65532
+    runAsGroup: 65532
     fsGroup: 65532
     seccompProfile:
       type: RuntimeDefault
@@ -59,10 +86,12 @@ ingestor:
       path: /health
       initialDelaySeconds: 10
       periodSeconds: 15
+      failureThreshold: 3
     readiness:
       path: /ready
       initialDelaySeconds: 5
-      periodSeconds: 10
+      periodSeconds: 5
+      failureThreshold: 2
   podDisruptionBudget:
     enabled: true
     minAvailable: 2
@@ -82,7 +111,8 @@ ingestor:
   topologySpreadConstraints:
     - maxSkew: 1
       topologyKey: topology.kubernetes.io/zone
-      whenUnsatisfiable: DoNotSchedule
+      # ScheduleAnyway: a zone outage must not block rescheduling.
+      whenUnsatisfiable: ScheduleAnyway
       labelSelector:
         matchLabels:
           app: ingestor
@@ -92,7 +122,7 @@ processor:
   replicaCount: 3
   image:
     repository: observability-pipeline/processor
-    tag: "2.0.0"
+    tag: "2.1.0"
     pullPolicy: IfNotPresent
   service:
     type: ClusterIP
@@ -105,28 +135,26 @@ processor:
       cpu: "2"
       memory: 512Mi
   autoscaling:
-    # Kafka consumers should scale from lag via KEDA, not CPU. Disabled until
-    # the KEDA CRD/operator is installed in the target cluster.
+    # CPU is the wrong signal for a consumer that waits on I/O. Prefer
+    # kedaScaling (lag-based). Enabling both is rejected at render time.
     enabled: false
     minReplicas: 3
-    # Must not exceed partition count: 6 partitions → max 6 consumers.
-    # Extra replicas sit idle but still consume cluster resources.
     maxReplicas: 6
     targetCPUUtilization: 60
   kedaScaling:
-    # KEDA-based scaling off Kafka consumer lag is strictly better than
-    # CPU-based HPA for a consumer that blocks on I/O, not computation.
     enabled: false
     minReplicas: 3
     maxReplicas: 6
-    kafkaLagThreshold: "100"
+    kafkaLagThreshold: "1000"
   config:
     kafkaBootstrapServers: kafka:9092
     kafkaTopicRaw: metrics.raw
     kafkaTopicAlerts: alerts.fired
     kafkaTopicDlq: metrics.dlq
     consumerGroup: processor-group
-    clickhouseUrl: http://clickhouse:8123/observability
+    # Base URL only. The database is selected by the client; a path here
+    # is sent with every HTTP request and ClickHouse answers 404.
+    clickhouseUrl: http://clickhouse:8123
     clickhouseCredentialsSecret: observability-clickhouse-processor
     batchSize: 1000
     flushIntervalMs: 500
@@ -135,9 +163,16 @@ processor:
     anomalyThreshold: "3.0"
     detectorCapacity: "100000"
     maxWriteAttempts: "5"
+    clickhouseTimeoutMs: "10000"
+  # SIGTERM triggers a final flush+commit. Worst case is maxWriteAttempts x
+  # clickhouseTimeoutMs plus backoff (~55s with these values). If the grace
+  # period expires first nothing is lost: offsets stay uncommitted and the
+  # partition's next owner replays.
+  terminationGracePeriodSeconds: 75
   podSecurityContext:
     runAsNonRoot: true
     runAsUser: 65532
+    runAsGroup: 65532
     fsGroup: 65532
     seccompProfile:
       type: RuntimeDefault
@@ -148,154 +183,53 @@ processor:
       drop: ["ALL"]
   podDisruptionBudget:
     enabled: true
-    minAvailable: 2
+    # maxUnavailable, not minAvailable: during a ClickHouse outage every
+    # processor reports not-ready, and minAvailable would then block node
+    # drains entirely.
+    maxUnavailable: 1
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
   topologySpreadConstraints:
     - maxSkew: 1
       topologyKey: topology.kubernetes.io/zone
-      whenUnsatisfiable: DoNotSchedule
+      whenUnsatisfiable: ScheduleAnyway
       labelSelector:
         matchLabels:
           app: processor
 
-# ── Kafka (Bitnami subchart) ────────────────────────────────
-kafka:
-  enabled: true
-  replicaCount: 3
-  kraft:
-    enabled: true
-  listeners:
-    client:
-      protocol: PLAINTEXT
-    interbroker:
-      protocol: PLAINTEXT
-  persistence:
-    enabled: true
-    size: 50Gi
-    storageClass: gp3
-  resources:
-    requests:
-      cpu: 500m
-      memory: 1Gi
-    limits:
-      cpu: "2"
-      memory: 2Gi
-  metrics:
-    kafka:
-      enabled: true
-    jmx:
-      enabled: true
+serviceAccount:
+  create: true
+  # Neither service calls the Kubernetes API.
+  automountToken: false
 
-# ── ClickHouse ───────────────────────────────────────────────
-clickhouse:
-  enabled: true
-  replicaCount: 2
-  shards: 1
-  persistence:
-    enabled: true
-    size: 100Gi
-    storageClass: gp3
-  resources:
-    requests:
-      cpu: "1"
-      memory: 2Gi
-    limits:
-      cpu: "4"
-      memory: 4Gi
-
-# ── Prometheus ───────────────────────────────────────────────
-prometheus:
-  enabled: true
-  image:
-    repository: prom/prometheus
-    tag: v2.51.0
-  retention: 15d
-  resources:
-    requests:
-      cpu: 250m
-      memory: 512Mi
-    limits:
-      cpu: "1"
-      memory: 1Gi
-  persistence:
-    enabled: true
-    size: 50Gi
-    storageClass: gp3
-
-# ── Grafana ──────────────────────────────────────────────────
-grafana:
-  enabled: true
-  image:
-    repository: grafana/grafana
-    tag: "10.4.0"
-  # Use Kubernetes secret, not chart values
-  adminUser: admin
-  adminPasswordSecret: grafana-admin-secret
-  plugins:
-    - grafana-clickhouse-datasource
-  resources:
-    requests:
-      cpu: 100m
-      memory: 128Mi
-    limits:
-      cpu: 500m
-      memory: 256Mi
-  persistence:
-    enabled: true
-    size: 5Gi
-
-# ── Grafana Tempo ────────────────────────────────────────────
-tempo:
-  enabled: true
-  image:
-    repository: grafana/tempo
-    tag: "2.4.1"
-  resources:
-    requests:
-      cpu: 250m
-      memory: 256Mi
-    limits:
-      cpu: "1"
-      memory: 512Mi
-  persistence:
-    enabled: true
-    size: 20Gi
-
-# ── Jaeger ───────────────────────────────────────────────────
-jaeger:
-  enabled: true
-  image:
-    repository: jaegertracing/all-in-one
-    tag: "1.55"
-  storage:
-    type: memory
-    maxTraces: 50000
-
-# ── OpenTelemetry Collector ──────────────────────────────────
-otelCollector:
-  enabled: true
-  image:
-    repository: otel/opentelemetry-collector-contrib
-    tag: "0.96.0"
-  resources:
-    requests:
-      cpu: 100m
-      memory: 128Mi
-    limits:
-      cpu: 500m
-      memory: 256Mi
-
-# ── AlertManager ─────────────────────────────────────────────
-alertmanager:
-  enabled: true
-  # Credentials reference Kubernetes secrets, never chart values
-  slackWebhookSecret: alertmanager-slack-secret
-  pagerdutyRoutingKeySecret: alertmanager-pagerduty-secret
-
-# ── Network Policies ────────────────────────────────────────
+# ── Network policies ────────────────────────────────────────
+# Egress destinations are environment-specific (in-cluster operators vs
+# managed endpoints), so they are given as raw NetworkPolicyPeer lists.
 networkPolicies:
   enabled: true
+  kafkaPort: 9092
+  clickhousePort: 8123
+  kafkaPeers:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: kafka
+  clickhousePeers:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: clickhouse
+  # Who may scrape /metrics (kube-prometheus-stack runs in "monitoring").
+  metricsScrapers:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring
 
-# ── Service Monitor (Prometheus Operator) ────────────────────
+# ── kube-prometheus-stack integration ────────────────────────
+# Requires the monitoring.coreos.com CRDs.
 serviceMonitor:
   enabled: false
-  interval: 10s
+  interval: 15s
+  labels: {}
+prometheusRule:
+  enabled: false
+  labels: {}

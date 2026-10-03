@@ -41,10 +41,13 @@ impl DlqReason {
 pub struct DlqProducer {
     producer: FutureProducer,
     topic: String,
+    /// Recorded in every DLQ header so a replay tool knows where the record
+    /// came from even when topics are renamed per environment.
+    source_topic: String,
 }
 
 impl DlqProducer {
-    pub fn new(brokers: &str, topic: &str) -> Result<Self> {
+    pub fn new(brokers: &str, topic: &str, source_topic: &str) -> Result<Self> {
         let producer: FutureProducer = ClientConfig::new()
             .set("bootstrap.servers", brokers)
             .set("acks", "all")
@@ -56,6 +59,7 @@ impl DlqProducer {
         Ok(DlqProducer {
             producer,
             topic: topic.to_string(),
+            source_topic: source_topic.to_string(),
         })
     }
 
@@ -85,7 +89,7 @@ impl DlqProducer {
             })
             .insert(Header {
                 key: "dlq.source_topic",
-                value: Some("metrics.raw"),
+                value: Some(self.source_topic.as_str()),
             })
             .insert(Header {
                 key: "dlq.source_partition",

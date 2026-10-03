@@ -6,14 +6,15 @@
 // ClickHouse AND WAITS, then commits the exact offsets it just persisted.
 // If the write fails, it does not commit, and the messages are replayed.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use futures_util::StreamExt;
+use rdkafka::client::ClientContext;
 use rdkafka::config::ClientConfig;
-use rdkafka::consumer::{CommitMode, Consumer, StreamConsumer};
+use rdkafka::consumer::{CommitMode, Consumer, ConsumerContext, Rebalance, StreamConsumer};
 use rdkafka::message::Message;
 use rdkafka::{Offset, TopicPartitionList};
 use tokio::sync::watch;
@@ -23,7 +24,7 @@ use crate::config::Config;
 use crate::detector::registry::DetectorRegistry;
 use crate::dlq::{DlqProducer, DlqReason};
 use crate::model::{Alert, AlertRow, MetricRow, ProcessedMetric, RawMetric};
-use crate::producer::AlertProducer;
+use crate::producer::{alert_id, AlertProducer};
 use crate::storage::clickhouse::{is_permanent_clickhouse_error, ClickHouseWriter};
 
 /// Rows accumulated for one partition, plus the highest offset they cover.
@@ -31,6 +32,10 @@ struct PartitionBatch {
     rows: Vec<MetricRow>,
     alert_rows: Vec<AlertRow>,
     last_offset: i64,
+    /// Number of Kafka records (not rows) this batch accounts for.
+    records: usize,
+    /// Kafka CreateTime of each accounted record, for freshness measurement.
+    created_ms: Vec<i64>,
 }
 
 impl PartitionBatch {
@@ -39,12 +44,82 @@ impl PartitionBatch {
             rows: Vec::new(),
             alert_rows: Vec::new(),
             last_offset: -1,
+            records: 0,
+            created_ms: Vec::new(),
         }
     }
 }
 
+/// Consumer context that records rebalance events for the consumer loop.
+///
+/// librdkafka invokes these callbacks from inside `poll`, on the task that is
+/// driving the stream, so they must be quick and must not touch the loop's
+/// state directly. They only record which partitions were revoked; the loop
+/// drains that list before it next writes or commits.
+///
+/// Why it matters: rows buffered for a partition we no longer own must not
+/// have their offsets committed by us. The broker does not check partition
+/// ownership on OffsetCommit, so a late commit from the previous owner can
+/// move the new owner's committed position backwards (duplicate replay) or
+/// interleave with its commits. Releasing the batch is always safe: nothing
+/// in it was committed, so the new owner replays it from the last commit.
+#[derive(Default)]
+pub struct RebalanceTracker {
+    revoked: Mutex<Vec<i32>>,
+    assigned: Mutex<HashSet<i32>>,
+}
+
+impl RebalanceTracker {
+    fn take_revoked(&self) -> Vec<i32> {
+        std::mem::take(&mut *self.revoked.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+}
+
+impl ClientContext for RebalanceTracker {}
+
+impl ConsumerContext for RebalanceTracker {
+    fn pre_rebalance(&self, rebalance: &Rebalance<'_>) {
+        match rebalance {
+            Rebalance::Revoke(tpl) => {
+                crate::metrics::REBALANCE_EVENTS
+                    .with_label_values(&["revoke"])
+                    .inc();
+                let parts: Vec<i32> = tpl.elements().iter().map(|e| e.partition()).collect();
+                info!(partitions = ?parts, "partitions revoked");
+                let mut assigned = self.assigned.lock().unwrap_or_else(|e| e.into_inner());
+                for p in &parts {
+                    assigned.remove(p);
+                }
+                crate::metrics::ASSIGNED_PARTITIONS.set(assigned.len() as f64);
+                self.revoked
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .extend(parts);
+            }
+            Rebalance::Assign(tpl) => {
+                crate::metrics::REBALANCE_EVENTS
+                    .with_label_values(&["assign"])
+                    .inc();
+                let parts: Vec<i32> = tpl.elements().iter().map(|e| e.partition()).collect();
+                info!(partitions = ?parts, "partitions assigned");
+                let mut assigned = self.assigned.lock().unwrap_or_else(|e| e.into_inner());
+                assigned.extend(parts);
+                crate::metrics::ASSIGNED_PARTITIONS.set(assigned.len() as f64);
+            }
+            Rebalance::Error(e) => {
+                crate::metrics::REBALANCE_EVENTS
+                    .with_label_values(&["error"])
+                    .inc();
+                warn!(error = %e, "rebalance error");
+            }
+        }
+    }
+}
+
+type PipelineConsumer = StreamConsumer<RebalanceTracker>;
+
 pub struct ConsumerLoop {
-    consumer: Arc<StreamConsumer>,
+    consumer: Arc<PipelineConsumer>,
     writer: Arc<ClickHouseWriter>,
     alerts: Arc<AlertProducer>,
     dlq: Arc<DlqProducer>,
@@ -61,17 +136,19 @@ impl ConsumerLoop {
         alerts: Arc<AlertProducer>,
         dlq: Arc<DlqProducer>,
     ) -> Result<Self> {
-        let consumer: StreamConsumer = ClientConfig::new()
+        let consumer: PipelineConsumer = ClientConfig::new()
             .set("bootstrap.servers", &config.kafka_brokers)
             .set("group.id", &config.kafka_consumer_group)
             .set("enable.auto.commit", "false")
             .set("auto.offset.reset", &config.kafka_auto_offset_reset)
             .set("session.timeout.ms", "30000")
             // Must exceed worst-case flush time or the broker evicts us
-            // mid-write and hands our partitions to someone else.
+            // mid-write and hands our partitions to someone else. Worst case
+            // is max_write_attempts x clickhouse_timeout plus backoff; the
+            // defaults (5 x 30s) stay well under this.
             .set("max.poll.interval.ms", "300000")
             .set("partition.assignment.strategy", "cooperative-sticky")
-            .create()?;
+            .create_with_context(RebalanceTracker::default())?;
 
         consumer.subscribe(&[&config.kafka_topic_raw])?;
 
@@ -210,6 +287,7 @@ impl ConsumerLoop {
         let start = Instant::now();
         let partition = msg.partition();
         let offset = msg.offset();
+        let created_ms = msg.timestamp().to_millis();
 
         let payload = match msg.payload() {
             Some(p) => p,
@@ -218,7 +296,7 @@ impl ConsumerLoop {
                 self.dlq
                     .send(&[], DlqReason::EmptyPayload, partition, offset)
                     .await?;
-                self.account(partition, offset, None, None);
+                self.account(partition, offset, created_ms, None, None);
                 return Ok(());
             }
         };
@@ -234,7 +312,7 @@ impl ConsumerLoop {
                         offset,
                     )
                     .await?;
-                self.account(partition, offset, None, None);
+                self.account(partition, offset, created_ms, None, None);
                 return Ok(());
             }
         };
@@ -248,7 +326,7 @@ impl ConsumerLoop {
             self.dlq
                 .send(payload, DlqReason::ValueNotFinite, partition, offset)
                 .await?;
-            self.account(partition, offset, None, None);
+            self.account(partition, offset, created_ms, None, None);
             return Ok(());
         }
 
@@ -270,7 +348,7 @@ impl ConsumerLoop {
         let mut alert_row = None;
         if verdict.is_anomaly {
             crate::metrics::ANOMALIES_DETECTED
-                .with_label_values(&[&raw.name, verdict.severity.as_str()])
+                .with_label_values(&[verdict.detector_type.as_str(), verdict.severity.as_str()])
                 .inc();
             let alert = Alert {
                 timestamp: raw.timestamp,
@@ -283,7 +361,8 @@ impl ConsumerLoop {
                 severity: verdict.severity,
                 tags: raw.tags.clone(),
             };
-            if let Err(e) = self.alerts.publish_alert(&alert).await {
+            let id = alert_id(&self.config.kafka_topic_raw, partition, offset);
+            if let Err(e) = self.alerts.publish_alert(&alert, &id).await {
                 warn!(error = %e, "alert fan-out failed");
                 crate::metrics::FANOUT_ERRORS.inc();
             }
@@ -299,7 +378,7 @@ impl ConsumerLoop {
         }
 
         let row = MetricRow::from_processed(&processed, partition, offset);
-        self.account(partition, offset, Some(row), alert_row);
+        self.account(partition, offset, created_ms, Some(row), alert_row);
 
         crate::metrics::PROCESSING_LATENCY.observe(start.elapsed().as_secs_f64());
         debug!(
@@ -319,6 +398,7 @@ impl ConsumerLoop {
         &mut self,
         partition: i32,
         offset: i64,
+        created_ms: Option<i64>,
         row: Option<MetricRow>,
         alert_row: Option<AlertRow>,
     ) {
@@ -327,6 +407,10 @@ impl ConsumerLoop {
             .entry(partition)
             .or_insert_with(PartitionBatch::new);
         b.last_offset = offset;
+        b.records += 1;
+        if let Some(ts) = created_ms {
+            b.created_ms.push(ts);
+        }
         self.buffered += 1;
         if let Some(r) = row {
             b.rows.push(r);
@@ -339,6 +423,7 @@ impl ConsumerLoop {
     /// Persist every buffered row, then commit the covered offsets.
     /// Returns Err WITHOUT committing if the write does not succeed.
     async fn flush_all(&mut self) -> Result<()> {
+        self.release_unowned()?;
         if self.batches.is_empty() {
             return Ok(());
         }
@@ -403,9 +488,60 @@ impl ConsumerLoop {
         self.consumer.commit(&tpl, CommitMode::Sync)?;
 
         crate::metrics::ROWS_COMMITTED.inc_by(rows.len() as f64);
+        self.observe_freshness();
         self.batches.clear();
         self.buffered = 0;
         Ok(())
+    }
+
+    /// Drop buffered records for partitions this member no longer owns, so
+    /// their offsets are never committed by us. See `RebalanceTracker`.
+    ///
+    /// Two sources: partitions the rebalance callback reported as revoked,
+    /// and — as a belt-and-braces check right before a write — anything not
+    /// in the consumer's current assignment.
+    fn release_unowned(&mut self) -> Result<()> {
+        let mut drop: HashSet<i32> = self.consumer.context().take_revoked().into_iter().collect();
+
+        if !self.batches.is_empty() {
+            let owned: HashSet<i32> = self
+                .consumer
+                .assignment()?
+                .elements()
+                .iter()
+                .filter(|e| e.topic() == self.config.kafka_topic_raw)
+                .map(|e| e.partition())
+                .collect();
+            drop.extend(self.batches.keys().filter(|p| !owned.contains(p)));
+        }
+
+        for partition in drop {
+            if let Some(batch) = self.batches.remove(&partition) {
+                self.buffered = self.buffered.saturating_sub(batch.records);
+                crate::metrics::REVOKED_RECORDS_DROPPED.inc_by(batch.records as f64);
+                warn!(
+                    partition,
+                    records = batch.records,
+                    "released uncommitted batch for a partition we no longer own; new owner replays it"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Record ingest-to-durable latency for every record just committed.
+    fn observe_freshness(&self) {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut oldest: Option<i64> = None;
+        for ts in self.batches.values().flat_map(|b| b.created_ms.iter()) {
+            let lag_s = (now_ms - ts).max(0) as f64 / 1000.0;
+            crate::metrics::END_TO_END_LAG.observe(lag_s);
+            oldest = Some(oldest.map_or(*ts, |o: i64| o.min(*ts)));
+        }
+        if let Some(ts) = oldest {
+            crate::metrics::OLDEST_COMMITTED_AGE.set((now_ms - ts).max(0) as f64 / 1000.0);
+        }
+        crate::metrics::LAST_COMMIT_TIMESTAMP.set(now_ms as f64 / 1000.0);
     }
 
     /// Re-insert subsets until a ClickHouse rejection can be attributed to a

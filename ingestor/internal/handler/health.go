@@ -9,8 +9,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/Kevinbastin/observability-pipeline/ingestor/internal/model"
-	"github.com/Kevinbastin/observability-pipeline/ingestor/internal/producer"
+	"github.com/KevinKattakayam/datadog/ingestor/internal/model"
+	"github.com/KevinKattakayam/datadog/ingestor/internal/producer"
 )
 
 const version = "2.0.0"

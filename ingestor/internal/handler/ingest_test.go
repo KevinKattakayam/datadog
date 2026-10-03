@@ -1,321 +1,360 @@
 package handler
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/Kevinbastin/observability-pipeline/ingestor/internal/model"
-	"github.com/Kevinbastin/observability-pipeline/ingestor/internal/validator"
+	"github.com/KevinKattakayam/datadog/ingestor/internal/middleware"
+	"github.com/KevinKattakayam/datadog/ingestor/internal/model"
 )
+
+// These tests drive the production IngestHandler. The previous versions
+// re-implemented a handler inline in each test and asserted on that copy,
+// so the real 202/207/503 logic had no coverage at all.
 
 func init() {
 	gin.SetMode(gin.TestMode)
 }
 
-// TestValidateMetricDirect tests the validation logic directly (no Kafka needed).
-func TestValidateMetricDirect_Valid(t *testing.T) {
-	m := &model.Metric{
-		Name:      "api.request.duration_ms",
-		Value:     142.7,
-		Unit:      "ms",
-		Tags:      map[string]string{"service": "checkout"},
-		Timestamp: time.Now().Unix(),
-		Host:      "prod-api-01",
-	}
-	if err := validator.ValidateMetric(m); err != nil {
-		t.Errorf("expected valid metric, got error: %v", err)
-	}
+// fakePublisher records what reached "Kafka" and can fail chosen records.
+type fakePublisher struct {
+	mu        sync.Mutex
+	down      bool                      // every publish fails
+	failNames map[string]bool           // batch items with these names fail
+	published map[string][]model.Metric // tenant -> metrics acked
+	calls     int
 }
 
-func TestValidateMetricDirect_MissingName(t *testing.T) {
-	m := &model.Metric{
-		Value:     142.7,
-		Timestamp: time.Now().Unix(),
-		Host:      "prod-api-01",
-	}
-	if err := validator.ValidateMetric(m); err == nil {
-		t.Error("expected error for missing name")
-	}
+var errBroker = errors.New("NOT_ENOUGH_REPLICAS")
+
+func newFake() *fakePublisher {
+	return &fakePublisher{failNames: map[string]bool{}, published: map[string][]model.Metric{}}
 }
 
-func TestValidateMetricDirect_MissingHost(t *testing.T) {
-	m := &model.Metric{
-		Name:      "test.metric",
-		Value:     42.0,
-		Timestamp: time.Now().Unix(),
+func (f *fakePublisher) Publish(_ context.Context, tenant string, m *model.Metric) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if f.down {
+		return errBroker
 	}
-	if err := validator.ValidateMetric(m); err == nil {
-		t.Error("expected error for missing host")
-	}
+	f.published[tenant] = append(f.published[tenant], *m)
+	return nil
 }
 
-// TestIngestSingle_InvalidJSON tests that invalid JSON is rejected with 400.
-func TestIngestSingle_InvalidJSON(t *testing.T) {
-	router := gin.New()
-	// Use a simple handler that just parses JSON and validates — no Kafka needed
-	router.POST("/ingest", func(c *gin.Context) {
-		var metric model.Metric
-		if err := c.ShouldBindJSON(&metric); err != nil {
-			c.JSON(http.StatusBadRequest, model.ErrorResponse{
-				Error: "invalid request body",
-				Code:  http.StatusBadRequest,
-			})
-			return
+func (f *fakePublisher) PublishBatch(_ context.Context, tenant string, ms []model.Metric) ([]error, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	out := make([]error, len(ms))
+	for i, m := range ms {
+		if f.down || f.failNames[m.Name] {
+			out[i] = errBroker
+			continue
 		}
-		if err := validator.ValidateMetric(&metric); err != nil {
-			c.JSON(http.StatusBadRequest, model.ErrorResponse{
-				Error:   "validation failed",
-				Code:    http.StatusBadRequest,
-				Details: err.Error(),
-			})
-			return
+		f.published[tenant] = append(f.published[tenant], m)
+	}
+	return out, nil
+}
+
+func (f *fakePublisher) count(tenant string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.published[tenant])
+}
+
+// router wires the real handler behind a stub that sets the tenant the way
+// APIKeyAuth would, plus the production body-size middleware.
+func router(p Publisher, q Quota, maxBody int64) *gin.Engine {
+	h := NewIngestHandler(p, q, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	r := gin.New()
+	r.Use(middleware.MaxBodyBytes(maxBody))
+	r.Use(func(c *gin.Context) {
+		tenant := c.GetHeader("X-Test-Tenant")
+		if tenant == "" {
+			tenant = "tenant-a"
 		}
-		c.JSON(http.StatusAccepted, model.IngestResponse{Status: "accepted", Accepted: 1})
+		c.Set(middleware.TenantContextKey, tenant)
 	})
+	r.POST("/ingest", h.IngestSingle)
+	r.POST("/ingest/batch", h.IngestBatch)
+	return r
+}
 
-	req := httptest.NewRequest("POST", "/ingest", bytes.NewReader([]byte(`{bad json}`)))
+func metricJSON(name string) string {
+	return fmt.Sprintf(`{"name":%q,"value":1.5,"unit":"ms","timestamp":%d,"host":"prod-01","tags":{"svc":"api"}}`,
+		name, time.Now().Unix())
+}
+
+func batchJSON(items ...string) string {
+	return `{"metrics":[` + strings.Join(items, ",") + `]}`
+}
+
+func do(t *testing.T, r *gin.Engine, path, body string, headers ...string) (*httptest.ResponseRecorder, model.IngestResponse) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	for i := 0; i+1 < len(headers); i += 2 {
+		req.Header.Set(headers[i], headers[i+1])
+	}
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400, got %d", w.Code)
-	}
-}
-
-// TestIngestSingle_MissingName tests validation rejects missing name.
-func TestIngestSingle_MissingName(t *testing.T) {
-	router := gin.New()
-	router.POST("/ingest", func(c *gin.Context) {
-		var metric model.Metric
-		if err := c.ShouldBindJSON(&metric); err != nil {
-			c.JSON(http.StatusBadRequest, model.ErrorResponse{Error: "invalid", Code: 400})
-			return
-		}
-		if err := validator.ValidateMetric(&metric); err != nil {
-			c.JSON(http.StatusBadRequest, model.ErrorResponse{Error: "validation", Code: 400, Details: err.Error()})
-			return
-		}
-		c.JSON(http.StatusAccepted, model.IngestResponse{Status: "accepted", Accepted: 1})
-	})
-
-	body, _ := json.Marshal(map[string]interface{}{
-		"value": 142.7, "unit": "ms", "timestamp": time.Now().Unix(), "host": "test",
-	})
-	req := httptest.NewRequest("POST", "/ingest", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400, got %d", w.Code)
-	}
-}
-
-// TestIngestSingle_ValidMetric tests that a valid metric is accepted.
-func TestIngestSingle_ValidMetric(t *testing.T) {
-	router := gin.New()
-	router.POST("/ingest", func(c *gin.Context) {
-		var metric model.Metric
-		if err := c.ShouldBindJSON(&metric); err != nil {
-			c.JSON(http.StatusBadRequest, model.ErrorResponse{Error: "invalid", Code: 400})
-			return
-		}
-		if err := validator.ValidateMetric(&metric); err != nil {
-			c.JSON(http.StatusBadRequest, model.ErrorResponse{Error: "validation", Code: 400, Details: err.Error()})
-			return
-		}
-		// Simulate accepted (no Kafka in tests)
-		c.JSON(http.StatusAccepted, model.IngestResponse{Status: "accepted", Accepted: 1})
-	})
-
-	metric := model.Metric{
-		Name: "api.request.duration_ms", Value: 142.7, Unit: "ms",
-		Tags:      map[string]string{"service": "checkout"},
-		Timestamp: time.Now().Unix(), Host: "prod-api-01",
-	}
-	body, _ := json.Marshal(metric)
-	req := httptest.NewRequest("POST", "/ingest", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusAccepted {
-		t.Errorf("expected 202, got %d", w.Code)
-	}
-
+	r.ServeHTTP(w, req)
 	var resp model.IngestResponse
-	json.NewDecoder(w.Body).Decode(&resp)
-	if resp.Accepted != 1 {
-		t.Errorf("expected accepted=1, got %d", resp.Accepted)
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	return w, resp
+}
+
+// ── Single ───────────────────────────────────────────────────
+
+func TestSingle_AcceptedOnlyAfterPublish(t *testing.T) {
+	f := newFake()
+	w, resp := do(t, router(f, nil, 0), "/ingest", metricJSON("api.latency"))
+	if w.Code != http.StatusAccepted || resp.Accepted != 1 {
+		t.Fatalf("want 202 accepted=1, got %d %s", w.Code, w.Body)
+	}
+	if f.count("tenant-a") != 1 {
+		t.Fatal("metric was not published under the authenticated tenant")
 	}
 }
 
-// TestIngestBatch_EmptyBatch tests that empty batch is rejected.
-func TestIngestBatch_EmptyBatch(t *testing.T) {
-	router := gin.New()
-	router.POST("/ingest/batch", func(c *gin.Context) {
-		var batch model.BatchRequest
-		if err := c.ShouldBindJSON(&batch); err != nil {
-			c.JSON(http.StatusBadRequest, model.ErrorResponse{Error: "invalid", Code: 400})
-			return
-		}
-		if len(batch.Metrics) == 0 {
-			c.JSON(http.StatusBadRequest, model.ErrorResponse{Error: "empty batch", Code: 400})
-			return
-		}
-		c.JSON(http.StatusAccepted, model.IngestResponse{Status: "accepted", Accepted: len(batch.Metrics)})
-	})
+func TestSingle_KafkaDownIs503WithRetryAfter(t *testing.T) {
+	f := newFake()
+	f.down = true
+	w, _ := do(t, router(f, nil, 0), "/ingest", metricJSON("api.latency"))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("Kafka down must be 503, never 202; got %d", w.Code)
+	}
+	if w.Header().Get("Retry-After") == "" {
+		t.Fatal("503 must carry Retry-After")
+	}
+}
 
-	body, _ := json.Marshal(model.BatchRequest{Metrics: []model.Metric{}})
-	req := httptest.NewRequest("POST", "/ingest/batch", bytes.NewReader(body))
+func TestSingle_InvalidJSONAndInvalidMetricAre400(t *testing.T) {
+	f := newFake()
+	r := router(f, nil, 0)
+	for _, body := range []string{
+		`{not json`,
+		`{"name":"no.value","timestamp":1,"host":"h"}`,
+		fmt.Sprintf(`{"name":"bad..name","value":1,"timestamp":%d,"host":"h"}`, time.Now().Unix()),
+		fmt.Sprintf(`{"name":"ok","value":1,"timestamp":%d,"host":""}`, time.Now().Unix()),
+	} {
+		if w, _ := do(t, r, "/ingest", body); w.Code != http.StatusBadRequest {
+			t.Errorf("body %q: want 400, got %d", body, w.Code)
+		}
+	}
+	if f.calls != 0 {
+		t.Fatal("invalid input must never reach Kafka")
+	}
+}
+
+func TestSingle_ExplicitZeroValueIsAccepted(t *testing.T) {
+	f := newFake()
+	r := router(f, nil, 0)
+	for _, v := range []string{"0", "0.0", "-0"} {
+		body := fmt.Sprintf(`{"name":"zero.metric","value":%s,"timestamp":%d,"host":"h"}`, v, time.Now().Unix())
+		if w, _ := do(t, r, "/ingest", body); w.Code != http.StatusAccepted {
+			t.Errorf("value %s rejected: %d %s", v, w.Code, w.Body)
+		}
+	}
+}
+
+// ── Body limit ───────────────────────────────────────────────
+
+func TestBodyLimit_DeclaredLengthIs413(t *testing.T) {
+	w, _ := do(t, router(newFake(), nil, 64), "/ingest", metricJSON("x"+strings.Repeat("y", 200)))
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("want 413, got %d", w.Code)
+	}
+}
+
+func TestBodyLimit_ChunkedBodyIs413(t *testing.T) {
+	// No Content-Length: the limit must still hold while streaming.
+	r := router(newFake(), nil, 64)
+	body := io.MultiReader(strings.NewReader(metricJSON("x" + strings.Repeat("y", 200))))
+	req := httptest.NewRequest(http.MethodPost, "/ingest", body)
+	req.ContentLength = -1
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400, got %d", w.Code)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("want 413 for chunked oversize body, got %d", w.Code)
 	}
 }
 
-// TestIngestBatch_ValidBatch tests batch ingestion with valid metrics.
-func TestIngestBatch_ValidBatch(t *testing.T) {
-	router := gin.New()
-	router.POST("/ingest/batch", func(c *gin.Context) {
-		var batch model.BatchRequest
-		if err := c.ShouldBindJSON(&batch); err != nil {
-			c.JSON(http.StatusBadRequest, model.ErrorResponse{Error: "invalid", Code: 400})
-			return
-		}
-		valid := 0
-		for _, m := range batch.Metrics {
-			if err := validator.ValidateMetric(&m); err == nil {
-				valid++
-			}
-		}
-		if valid == 0 {
-			c.JSON(http.StatusBadRequest, model.ErrorResponse{Error: "no valid", Code: 400})
-			return
-		}
-		c.JSON(http.StatusAccepted, model.IngestResponse{Status: "accepted", Accepted: valid})
-	})
+// ── Batch ────────────────────────────────────────────────────
 
-	batch := model.BatchRequest{
-		Metrics: []model.Metric{
-			{Name: "cpu.usage", Value: 67.3, Unit: "percent", Tags: map[string]string{"svc": "api"}, Timestamp: time.Now().Unix(), Host: "prod-01"},
-			{Name: "mem.usage", Value: 2048, Unit: "bytes", Tags: map[string]string{"svc": "api"}, Timestamp: time.Now().Unix(), Host: "prod-01"},
-			{Name: "disk.io", Value: 1024, Unit: "bytes", Tags: map[string]string{"svc": "api"}, Timestamp: time.Now().Unix(), Host: "prod-01"},
-		},
-	}
-	body, _ := json.Marshal(batch)
-	req := httptest.NewRequest("POST", "/ingest/batch", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusAccepted {
-		t.Errorf("expected 202, got %d", w.Code)
-	}
-
-	var resp model.IngestResponse
-	json.NewDecoder(w.Body).Decode(&resp)
-	if resp.Accepted != 3 {
-		t.Errorf("expected accepted=3, got %d", resp.Accepted)
+func TestBatch_AllAcceptedIs202(t *testing.T) {
+	f := newFake()
+	w, resp := do(t, router(f, nil, 0), "/ingest/batch",
+		batchJSON(metricJSON("a.one"), metricJSON("a.two"), metricJSON("a.three")))
+	if w.Code != http.StatusAccepted || resp.Accepted != 3 || len(resp.Errors) != 0 {
+		t.Fatalf("want 202 accepted=3, got %d %s", w.Code, w.Body)
 	}
 }
 
-// TestIngestBindingAcceptsExplicitZeroValues distinguishes an omitted value
-// from a valid metric whose value is zero.  Gin's `required` validator treats
-// a float64 zero value as missing, so this must exercise JSON binding rather
-// than only the domain validator.
-func TestIngestBindingAcceptsExplicitZeroValues(t *testing.T) {
-	timestamp := time.Now().Unix()
-	cases := []struct {
-		name string
-		path string
-		body string
-	}{
-		{
-			name: "single integer zero",
-			path: "/ingest",
-			body: fmt.Sprintf(`{"name":"zero.metric","value":0,"timestamp":%d,"host":"test"}`, timestamp),
-		},
-		{
-			name: "single decimal zero",
-			path: "/ingest",
-			body: fmt.Sprintf(`{"name":"zero.metric","value":0.0,"timestamp":%d,"host":"test"}`, timestamp),
-		},
-		{
-			name: "batch integer and decimal zero",
-			path: "/ingest/batch",
-			body: fmt.Sprintf(`{"metrics":[{"name":"zero.integer","value":0,"timestamp":%d,"host":"test"},{"name":"zero.decimal","value":0.0,"timestamp":%d,"host":"test"}]}`, timestamp, timestamp),
-		},
+func TestBatch_InvalidItemsAreSkippedWithIndices(t *testing.T) {
+	// Roadmap acceptance: a batch with 3 invalid metrics reports skipped: 3.
+	f := newFake()
+	bad := fmt.Sprintf(`{"name":"bad..name","value":1,"timestamp":%d,"host":"h"}`, time.Now().Unix())
+	w, resp := do(t, router(f, nil, 0), "/ingest/batch",
+		batchJSON(bad, metricJSON("ok.one"), bad, metricJSON("ok.two"), bad))
+	if w.Code != http.StatusMultiStatus {
+		t.Fatalf("want 207, got %d %s", w.Code, w.Body)
 	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			router := gin.New()
-			router.POST("/ingest", func(c *gin.Context) {
-				var metric model.Metric
-				if err := c.ShouldBindJSON(&metric); err != nil {
-					c.Status(http.StatusBadRequest)
-					return
-				}
-				if err := validator.ValidateMetric(&metric); err != nil {
-					c.Status(http.StatusBadRequest)
-					return
-				}
-				c.Status(http.StatusAccepted)
-			})
-			router.POST("/ingest/batch", func(c *gin.Context) {
-				var batch model.BatchRequest
-				if err := c.ShouldBindJSON(&batch); err != nil {
-					c.Status(http.StatusBadRequest)
-					return
-				}
-				for i := range batch.Metrics {
-					if err := validator.ValidateMetric(&batch.Metrics[i]); err != nil {
-						c.Status(http.StatusBadRequest)
-						return
-					}
-				}
-				c.Status(http.StatusAccepted)
-			})
-
-			req := httptest.NewRequest(http.MethodPost, tc.path, bytes.NewBufferString(tc.body))
-			req.Header.Set("Content-Type", "application/json")
-			w := httptest.NewRecorder()
-			router.ServeHTTP(w, req)
-			if w.Code != http.StatusAccepted {
-				t.Fatalf("explicit zero value was rejected: status=%d body=%s", w.Code, w.Body.String())
-			}
-		})
+	if resp.Accepted != 2 || resp.Skipped != 3 || resp.Rejected != 0 {
+		t.Fatalf("counts wrong: %+v", resp)
+	}
+	want := []int{0, 2, 4}
+	if len(resp.Errors) != 3 {
+		t.Fatalf("want 3 item errors, got %+v", resp.Errors)
+	}
+	for i, e := range resp.Errors {
+		if e.Index != want[i] || e.Retryable {
+			t.Errorf("error %d: want index %d non-retryable, got %+v", i, want[i], e)
+		}
 	}
 }
 
-func TestIngestBindingRejectsMissingValue(t *testing.T) {
-	router := gin.New()
-	router.POST("/ingest", func(c *gin.Context) {
-		var metric model.Metric
-		if err := c.ShouldBindJSON(&metric); err != nil {
-			c.Status(http.StatusBadRequest)
-			return
-		}
-		c.Status(http.StatusAccepted)
-	})
+func TestBatch_PartialKafkaFailureReportsOriginalIndices(t *testing.T) {
+	// Interleave an invalid item so the valid->request index mapping is
+	// actually exercised: Kafka failures must point at request positions.
+	f := newFake()
+	f.failNames["fail.me"] = true
+	bad := fmt.Sprintf(`{"name":"bad..name","value":1,"timestamp":%d,"host":"h"}`, time.Now().Unix())
+	w, resp := do(t, router(f, nil, 0), "/ingest/batch",
+		batchJSON(metricJSON("ok.one"), bad, metricJSON("fail.me"), metricJSON("ok.two")))
+	if w.Code != http.StatusMultiStatus {
+		t.Fatalf("want 207, got %d %s", w.Code, w.Body)
+	}
+	if resp.Accepted != 2 || resp.Rejected != 1 || resp.Skipped != 1 {
+		t.Fatalf("counts wrong: %+v", resp)
+	}
+	if resp.Accepted+resp.Rejected+resp.Skipped != 4 {
+		t.Fatal("counts must partition the request")
+	}
+	if len(resp.Errors) != 2 ||
+		resp.Errors[0].Index != 1 || resp.Errors[0].Retryable ||
+		resp.Errors[1].Index != 2 || !resp.Errors[1].Retryable {
+		t.Fatalf("want [idx1 non-retryable, idx2 retryable], got %+v", resp.Errors)
+	}
+}
 
-	req := httptest.NewRequest(http.MethodPost, "/ingest", bytes.NewBufferString(fmt.Sprintf(`{"name":"missing.value","timestamp":%d,"host":"test"}`, time.Now().Unix())))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("missing value was accepted: status=%d", w.Code)
+func TestBatch_KafkaDownIs503(t *testing.T) {
+	f := newFake()
+	f.down = true
+	w, resp := do(t, router(f, nil, 0), "/ingest/batch", batchJSON(metricJSON("a"), metricJSON("b")))
+	if w.Code != http.StatusServiceUnavailable || resp.Accepted != 0 || resp.Rejected != 2 {
+		t.Fatalf("want 503 rejected=2, got %d %s", w.Code, w.Body)
+	}
+	for _, e := range resp.Errors {
+		if !e.Retryable {
+			t.Fatalf("Kafka failures must be retryable: %+v", e)
+		}
+	}
+}
+
+func TestBatch_NothingValidIs400(t *testing.T) {
+	f := newFake()
+	bad := fmt.Sprintf(`{"name":"","value":1,"timestamp":%d,"host":"h"}`, time.Now().Unix())
+	w, resp := do(t, router(f, nil, 0), "/ingest/batch", batchJSON(bad, bad))
+	if w.Code != http.StatusBadRequest || resp.Skipped != 2 || len(resp.Errors) != 2 {
+		t.Fatalf("want 400 skipped=2, got %d %s", w.Code, w.Body)
+	}
+	if f.calls != 0 {
+		t.Fatal("nothing should be published")
+	}
+}
+
+func TestBatch_EmptyAndOversizedBatchAre400(t *testing.T) {
+	r := router(newFake(), nil, 0)
+	if w, _ := do(t, r, "/ingest/batch", `{"metrics":[]}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("empty batch: want 400, got %d", w.Code)
+	}
+	items := make([]string, 1001)
+	for i := range items {
+		items[i] = metricJSON("m")
+	}
+	if w, _ := do(t, r, "/ingest/batch", batchJSON(items...)); w.Code != http.StatusBadRequest {
+		t.Fatalf("1001 items: want 400, got %d", w.Code)
+	}
+}
+
+// ── Quota ────────────────────────────────────────────────────
+
+func TestQuota_CountsMetricsNotRequests(t *testing.T) {
+	// 10 metrics/sec, burst 10. One batch of 8 fits; a second does not —
+	// even though it is only the second *request*.
+	f := newFake()
+	q := middleware.NewTenantQuota(10, 10, nil)
+	r := router(f, q, 0)
+	items := make([]string, 8)
+	for i := range items {
+		items[i] = metricJSON("q.metric")
+	}
+	if w, _ := do(t, r, "/ingest/batch", batchJSON(items...)); w.Code != http.StatusAccepted {
+		t.Fatalf("first batch: want 202, got %d", w.Code)
+	}
+	w, _ := do(t, r, "/ingest/batch", batchJSON(items...))
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("second batch must exceed the metrics quota: got %d", w.Code)
+	}
+	ra, err := strconv.Atoi(w.Header().Get("Retry-After"))
+	if err != nil || ra < 1 {
+		t.Fatalf("429 needs Retry-After >= 1s, got %q", w.Header().Get("Retry-After"))
+	}
+	if f.count("tenant-a") != 8 {
+		t.Fatalf("refused batch must not be published; published=%d", f.count("tenant-a"))
+	}
+}
+
+func TestQuota_TenantsAreIsolated(t *testing.T) {
+	f := newFake()
+	q := middleware.NewTenantQuota(5, 5, nil)
+	r := router(f, q, 0)
+	items := make([]string, 5)
+	for i := range items {
+		items[i] = metricJSON("iso.metric")
+	}
+	do(t, r, "/ingest/batch", batchJSON(items...), "X-Test-Tenant", "noisy")
+	if w, _ := do(t, r, "/ingest/batch", batchJSON(items...), "X-Test-Tenant", "noisy"); w.Code != http.StatusTooManyRequests {
+		t.Fatalf("noisy tenant should be throttled, got %d", w.Code)
+	}
+	if w, _ := do(t, r, "/ingest/batch", batchJSON(items...), "X-Test-Tenant", "quiet"); w.Code != http.StatusAccepted {
+		t.Fatalf("tenant B must not be throttled by tenant A's flood, got %d", w.Code)
+	}
+}
+
+func TestQuota_RefillsOverTime(t *testing.T) {
+	q := middleware.NewTenantQuota(1000, 1000, nil)
+	if ok, _ := q.AllowN("t", 1000); !ok {
+		t.Fatal("full burst should be admitted")
+	}
+	ok, wait := q.AllowN("t", 100)
+	if ok || wait <= 0 || wait > 200*time.Millisecond {
+		t.Fatalf("want refusal with ~100ms wait, got ok=%v wait=%v", ok, wait)
+	}
+	time.Sleep(wait + 20*time.Millisecond)
+	if ok, _ := q.AllowN("t", 100); !ok {
+		t.Fatal("quota should have refilled")
+	}
+}
+
+func TestQuota_BatchLargerThanBurstSaysSplit(t *testing.T) {
+	q := middleware.NewTenantQuota(10, 10, nil)
+	if ok, wait := q.AllowN("t", 11); ok || wait >= 0 {
+		t.Fatalf("n > burst can never succeed; want negative wait, got ok=%v wait=%v", ok, wait)
 	}
 }

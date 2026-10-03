@@ -53,10 +53,12 @@ scrape_configs:
           service: kafka
 
   # ClickHouse
+  # ClickHouse serves Prometheus metrics on 9363 (infra/clickhouse/config.d),
+  # not on the 8123 query port.
   - job_name: clickhouse
     metrics_path: /metrics
     static_configs:
-      - targets: ["clickhouse:8123"]
+      - targets: ["clickhouse:9363"]
         labels:
           service: clickhouse
 
@@ -80,12 +82,3 @@ scrape_configs:
       - targets: ["tempo:3200"]
         labels:
           service: tempo
-
-  # Kafka Connect
-  - job_name: kafka-connect
-    metrics_path: /
-    static_configs:
-      - targets: ["kafka-connect:8083"]
-        labels:
-          service: kafka-connect
-

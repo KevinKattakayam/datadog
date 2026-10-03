@@ -1,3 +1,5 @@
+{{- include "obs.validate" . }}
+{{- $v := .Values.ingestor }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -7,14 +9,16 @@ metadata:
     app: ingestor
     {{- include "obs.labels" . | nindent 4 }}
 spec:
-  replicas: {{ .Values.ingestor.replicaCount }}
+  {{- if not $v.autoscaling.enabled }}
+  replicas: {{ $v.replicaCount }}
+  {{- end }}
   selector:
     matchLabels:
       app: ingestor
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 1
+      maxUnavailable: 0
       maxSurge: 2
   template:
     metadata:
@@ -22,84 +26,97 @@ spec:
         app: ingestor
         {{- include "obs.labels" . | nindent 8 }}
       annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "{{ .Values.ingestor.service.httpPort }}"
-        prometheus.io/path: "/metrics"
+        # Roll pods when the key Secret's name changes; content rotation is
+        # picked up live by the ingestor's key watcher.
+        checksum/api-keys-secret: {{ $v.apiKeysSecret | sha256sum | trunc 16 }}
     spec:
+      serviceAccountName: {{ include "obs.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountToken }}
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       securityContext:
-        {{- toYaml .Values.ingestor.podSecurityContext | nindent 8 }}
-      {{- with .Values.ingestor.topologySpreadConstraints }}
+        {{- toYaml $v.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: {{ $v.terminationGracePeriodSeconds }}
+      {{- with $v.topologySpreadConstraints }}
       topologySpreadConstraints:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      terminationGracePeriodSeconds: 45
       containers:
         - name: ingestor
-          image: "{{ .Values.global.imageRegistry }}{{ .Values.ingestor.image.repository }}:{{ .Values.ingestor.image.tag }}"
-          imagePullPolicy: {{ .Values.ingestor.image.pullPolicy }}
+          image: {{ include "obs.image" (dict "root" . "image" $v.image) | quote }}
+          imagePullPolicy: {{ $v.image.pullPolicy }}
           securityContext:
-            {{- toYaml .Values.ingestor.containerSecurityContext | nindent 12 }}
+            {{- toYaml $v.containerSecurityContext | nindent 12 }}
           ports:
             - name: http
-              containerPort: {{ .Values.ingestor.service.httpPort }}
+              containerPort: {{ $v.service.httpPort }}
               protocol: TCP
           env:
             - name: KAFKA_BOOTSTRAP_SERVERS
-              value: {{ .Values.ingestor.config.kafkaBootstrapServers | quote }}
+              value: {{ $v.config.kafkaBootstrapServers | quote }}
             - name: KAFKA_TOPIC_RAW
-              value: {{ .Values.ingestor.config.kafkaTopicRaw | quote }}
+              value: {{ $v.config.kafkaTopicRaw | quote }}
             - name: INGESTOR_PORT
-              value: {{ .Values.ingestor.service.httpPort | quote }}
+              value: {{ $v.service.httpPort | quote }}
             - name: INGESTOR_BATCH_SIZE
-              value: {{ .Values.ingestor.config.batchSize | quote }}
+              value: {{ $v.config.batchSize | quote }}
             - name: INGESTOR_FLUSH_INTERVAL_MS
-              value: {{ .Values.ingestor.config.flushIntervalMs | quote }}
+              value: {{ $v.config.flushIntervalMs | quote }}
             - name: INGESTOR_RATE_LIMIT_RPS
-              value: {{ .Values.ingestor.config.rateLimitRPS | quote }}
+              value: {{ $v.config.rateLimitRPS | quote }}
+            - name: INGESTOR_TENANT_METRICS_PER_SEC
+              value: {{ $v.config.tenantMetricsPerSec | quote }}
+            - name: INGESTOR_MAX_BODY_MIB
+              value: {{ $v.config.maxBodyMiB | quote }}
             - name: INGESTOR_LOG_LEVEL
-              value: {{ .Values.ingestor.config.logLevel | quote }}
+              value: {{ $v.config.logLevel | quote }}
             - name: API_KEYS_PATH
-              value: {{ .Values.ingestor.config.apiKeysPath | quote }}
+              value: {{ $v.config.apiKeysPath | quote }}
+            - name: API_KEYS_RELOAD_INTERVAL_SECONDS
+              value: {{ $v.config.apiKeysReloadIntervalSeconds | quote }}
             - name: AUTH_ALLOW_INSECURE_DEV
               value: "false"
             - name: INGESTOR_DRAIN_DELAY_SECONDS
-              value: {{ .Values.ingestor.config.drainDelaySeconds | quote }}
+              value: {{ $v.config.drainDelaySeconds | quote }}
           livenessProbe:
             httpGet:
-              path: {{ .Values.ingestor.probes.liveness.path }}
+              path: {{ $v.probes.liveness.path }}
               port: http
-            initialDelaySeconds: {{ .Values.ingestor.probes.liveness.initialDelaySeconds }}
-            periodSeconds: {{ .Values.ingestor.probes.liveness.periodSeconds }}
+            initialDelaySeconds: {{ $v.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ $v.probes.liveness.periodSeconds }}
+            failureThreshold: {{ $v.probes.liveness.failureThreshold }}
           readinessProbe:
             httpGet:
-              path: {{ .Values.ingestor.probes.readiness.path }}
+              path: {{ $v.probes.readiness.path }}
               port: http
-            initialDelaySeconds: {{ .Values.ingestor.probes.readiness.initialDelaySeconds }}
-            periodSeconds: {{ .Values.ingestor.probes.readiness.periodSeconds }}
+            initialDelaySeconds: {{ $v.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ $v.probes.readiness.periodSeconds }}
+            failureThreshold: {{ $v.probes.readiness.failureThreshold }}
           resources:
-            {{- toYaml .Values.ingestor.resources | nindent 12 }}
+            {{- toYaml $v.resources | nindent 12 }}
           volumeMounts:
             - name: api-keys
-              mountPath: /etc/secrets
+              # Mount the directory, not a subPath: Kubernetes only updates
+              # Secret volumes in place (enabling live key rotation) when
+              # they are mounted without subPath.
+              mountPath: {{ dir $v.config.apiKeysPath }}
               readOnly: true
       volumes:
         - name: api-keys
           secret:
-            secretName: {{ .Values.ingestor.apiKeysSecret | quote }}
+            secretName: {{ $v.apiKeysSecret | quote }}
             defaultMode: 0440
-      {{- with .Values.ingestor.nodeSelector }}
+      {{- with $v.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.ingestor.tolerations }}
+      {{- with $v.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.ingestor.affinity }}
+      {{- with $v.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -113,55 +130,55 @@ metadata:
     app: ingestor
     {{- include "obs.labels" . | nindent 4 }}
 spec:
-  type: {{ .Values.ingestor.service.type }}
+  type: {{ $v.service.type }}
   ports:
     - name: http
-      port: {{ .Values.ingestor.service.httpPort }}
+      port: {{ $v.service.httpPort }}
       targetPort: http
-      protocol: TCP
-    - name: grpc
-      port: {{ .Values.ingestor.service.grpcPort }}
-      targetPort: grpc
       protocol: TCP
   selector:
     app: ingestor
+{{- if $v.autoscaling.enabled }}
 ---
-{{- if .Values.ingestor.autoscaling.enabled }}
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
   name: {{ include "obs.fullname" . }}-ingestor
   namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "obs.labels" . | nindent 4 }}
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
     name: {{ include "obs.fullname" . }}-ingestor
-  minReplicas: {{ .Values.ingestor.autoscaling.minReplicas }}
-  maxReplicas: {{ .Values.ingestor.autoscaling.maxReplicas }}
+  minReplicas: {{ $v.autoscaling.minReplicas }}
+  maxReplicas: {{ $v.autoscaling.maxReplicas }}
   metrics:
     - type: Resource
       resource:
         name: cpu
         target:
           type: Utilization
-          averageUtilization: {{ .Values.ingestor.autoscaling.targetCPUUtilization }}
+          averageUtilization: {{ $v.autoscaling.targetCPUUtilization }}
     - type: Resource
       resource:
         name: memory
         target:
           type: Utilization
-          averageUtilization: {{ .Values.ingestor.autoscaling.targetMemoryUtilization }}
+          averageUtilization: {{ $v.autoscaling.targetMemoryUtilization }}
 {{- end }}
+{{- if $v.podDisruptionBudget.enabled }}
 ---
-{{- if .Values.ingestor.podDisruptionBudget.enabled }}
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
   name: {{ include "obs.fullname" . }}-ingestor
   namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "obs.labels" . | nindent 4 }}
 spec:
-  minAvailable: {{ .Values.ingestor.podDisruptionBudget.minAvailable }}
+  minAvailable: {{ $v.podDisruptionBudget.minAvailable }}
   selector:
     matchLabels:
       app: ingestor

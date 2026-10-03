@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Kevinbastin/observability-pipeline/ingestor/internal/model"
+	"github.com/KevinKattakayam/datadog/ingestor/internal/model"
 )
 
 func TestValidateMetric_Valid(t *testing.T) {
@@ -102,4 +102,46 @@ func TestValidateMetric_NaNValue(t *testing.T) {
 	// This test documents expected behavior
 	err := ValidateMetric(m)
 	_ = err // Document: NaN is allowed through (ClickHouse handles it)
+}
+
+func validBase() model.Metric {
+	return model.Metric{Name: "cpu.usage", Value: 1, Timestamp: time.Now().Unix(), Host: "prod-01"}
+}
+
+func TestValidateMetric_TagKeyCharset(t *testing.T) {
+	for _, key := range []string{"service", "k8s.pod", "app/version", "zone-a", "a_b"} {
+		m := validBase()
+		m.Tags = map[string]string{key: "v"}
+		if err := ValidateMetric(&m); err != nil {
+			t.Errorf("key %q should be valid: %v", key, err)
+		}
+	}
+	for _, key := range []string{"", "has space", "new\nline", "quote\"", "emoji😀", "semi;colon"} {
+		m := validBase()
+		m.Tags = map[string]string{key: "v"}
+		if err := ValidateMetric(&m); err == nil {
+			t.Errorf("key %q should be rejected", key)
+		}
+	}
+}
+
+func TestValidateMetric_ControlCharactersRejected(t *testing.T) {
+	cases := map[string]func(*model.Metric){
+		"newline in tag value": func(m *model.Metric) { m.Tags = map[string]string{"k": "a\nb"} },
+		"ANSI escape in value": func(m *model.Metric) { m.Tags = map[string]string{"k": "\x1b[31mred"} },
+		"NUL in host":          func(m *model.Metric) { m.Host = "prod\x00-01" },
+		"invalid UTF-8 value":  func(m *model.Metric) { m.Tags = map[string]string{"k": "\xff\xfe"} },
+	}
+	for name, mutate := range cases {
+		m := validBase()
+		mutate(&m)
+		if err := ValidateMetric(&m); err == nil {
+			t.Errorf("%s: should be rejected", name)
+		}
+	}
+	m := validBase()
+	m.Tags = map[string]string{"region": "São Paulo", "path": "/api/v1/users"}
+	if err := ValidateMetric(&m); err != nil {
+		t.Errorf("printable unicode and slashes must be allowed: %v", err)
+	}
 }

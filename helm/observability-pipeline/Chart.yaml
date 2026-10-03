@@ -1,29 +1,21 @@
 apiVersion: v2
 name: observability-pipeline
-description: Enterprise-grade distributed observability pipeline with Go, Rust, Kafka, and ClickHouse
+description: Go ingestor and Rust processor for a Kafka + ClickHouse metrics pipeline. Kafka, ClickHouse and Prometheus are external dependencies.
 type: application
-version: 1.0.0
-appVersion: "1.0.0"
+version: 2.0.0
+appVersion: "2.1.0"
+kubeVersion: ">=1.25.0-0"
 
 keywords:
   - observability
-  - monitoring
   - kafka
   - clickhouse
-  - prometheus
-  - grafana
-  - distributed-tracing
+  - anomaly-detection
+
+home: https://github.com/KevinKattakayam/datadog
+sources:
+  - https://github.com/KevinKattakayam/datadog
 
 maintainers:
-  - name: Kevin Bastin
-    url: https://github.com/Kevinbastin
-
-dependencies:
-  - name: kafka
-    version: "26.x.x"
-    repository: https://charts.bitnami.com/bitnami
-    condition: kafka.enabled
-  - name: clickhouse
-    version: "4.x.x"
-    repository: https://charts.bitnami.com/bitnami
-    condition: clickhouse.enabled
+  - name: Kevin
+    url: https://github.com/KevinKattakayam

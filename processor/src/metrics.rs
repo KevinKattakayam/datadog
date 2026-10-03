@@ -19,7 +19,9 @@ pub static ANOMALIES_DETECTED: Lazy<CounterVec> = Lazy::new(|| {
     register_counter_vec!(
         "processor_anomalies_detected_total",
         "Total anomalies detected by the processor",
-        &["metric", "severity"]
+        // Never label by metric name: names are client-controlled, so a
+        // label per name is an unbounded Prometheus series count.
+        &["detector", "severity"]
     )
     .unwrap()
 });
@@ -131,6 +133,70 @@ pub static NON_FINITE_VALUES: Lazy<Counter> = Lazy::new(|| {
     .unwrap()
 });
 
+pub static CLICKHOUSE_TIMEOUTS: Lazy<Counter> = Lazy::new(|| {
+    register_counter!(
+        "processor_clickhouse_timeouts_total",
+        "ClickHouse requests abandoned after the request timeout"
+    )
+    .unwrap()
+});
+
+/// Ingest-to-durable freshness. Measured from the Kafka record's CreateTime
+/// (stamped by the ingestor's producer when it accepted the request) to the
+/// moment the covering offset commit succeeded. This is the latency a
+/// customer experiences between a 202 and the row being queryable.
+pub static END_TO_END_LAG: Lazy<Histogram> = Lazy::new(|| {
+    register_histogram!(
+        "pipeline_end_to_end_lag_seconds",
+        "Seconds from ingestor acceptance (Kafka CreateTime) to durable ClickHouse write and offset commit",
+        vec![0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 300.0, 900.0, 3600.0]
+    )
+    .unwrap()
+});
+
+/// Age of the oldest record in the most recent committed flush. A gauge, so
+/// a stalled pipeline is visible as a value rather than as missing samples.
+pub static OLDEST_COMMITTED_AGE: Lazy<Gauge> = Lazy::new(|| {
+    register_gauge!(
+        "pipeline_oldest_committed_record_age_seconds",
+        "Age of the oldest record in the last committed flush"
+    )
+    .unwrap()
+});
+
+pub static LAST_COMMIT_TIMESTAMP: Lazy<Gauge> = Lazy::new(|| {
+    register_gauge!(
+        "processor_last_commit_timestamp_seconds",
+        "Unix time of the last successful offset commit"
+    )
+    .unwrap()
+});
+
+pub static REBALANCE_EVENTS: Lazy<CounterVec> = Lazy::new(|| {
+    register_counter_vec!(
+        "processor_rebalance_events_total",
+        "Consumer group rebalance callbacks observed",
+        &["kind"]
+    )
+    .unwrap()
+});
+
+pub static REVOKED_RECORDS_DROPPED: Lazy<Counter> = Lazy::new(|| {
+    register_counter!(
+        "processor_revoked_records_dropped_total",
+        "Uncommitted buffered records released because their partition was revoked (the new owner replays them)"
+    )
+    .unwrap()
+});
+
+pub static ASSIGNED_PARTITIONS: Lazy<Gauge> = Lazy::new(|| {
+    register_gauge!(
+        "processor_assigned_partitions",
+        "Partitions currently assigned to this processor instance"
+    )
+    .unwrap()
+});
+
 /// Initialize all metrics (force lazy static evaluation).
 pub fn init() {
     Lazy::force(&MESSAGES_CONSUMED);
@@ -148,4 +214,11 @@ pub fn init() {
     Lazy::force(&DETECTOR_SERIES_TRACKED);
     Lazy::force(&DETECTOR_SERIES_CAPACITY);
     Lazy::force(&NON_FINITE_VALUES);
+    Lazy::force(&CLICKHOUSE_TIMEOUTS);
+    Lazy::force(&END_TO_END_LAG);
+    Lazy::force(&OLDEST_COMMITTED_AGE);
+    Lazy::force(&LAST_COMMIT_TIMESTAMP);
+    Lazy::force(&REBALANCE_EVENTS);
+    Lazy::force(&REVOKED_RECORDS_DROPPED);
+    Lazy::force(&ASSIGNED_PARTITIONS);
 }

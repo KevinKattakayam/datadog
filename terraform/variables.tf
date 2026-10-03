@@ -80,8 +80,3 @@ variable "clickhouse_node_count" {
   default     = 2
 }
 
-variable "elasticache_node_type" {
-  description = "ElastiCache Redis node type"
-  type        = string
-  default     = "cache.r6g.large"
-}

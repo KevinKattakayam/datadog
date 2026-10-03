@@ -8,20 +8,22 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kerr"
 	"github.com/twmb/franz-go/pkg/kgo"
 
-	"github.com/Kevinbastin/observability-pipeline/ingestor/internal/model"
+	"github.com/KevinKattakayam/datadog/ingestor/internal/model"
 )
 
 // KafkaProducer wraps franz-go client for metric publishing.
 // Synchronous produce with acks=all and idempotency — 202 means "in Kafka".
 type KafkaProducer struct {
-	client *kgo.Client
-	topic  string
-	logger *slog.Logger
+	client    *kgo.Client
+	topic     string
+	logger    *slog.Logger
+	closeOnce sync.Once
 }
 
 // New creates a new KafkaProducer with synchronous, durable produce semantics.
@@ -71,33 +73,36 @@ func (p *KafkaProducer) Publish(ctx context.Context, tenantID string, m *model.M
 	return nil
 }
 
-// PublishBatch produces all records in one round-trip and reports exactly
-// how many were acknowledged.
+// PublishBatch produces all records in one round-trip and returns one result
+// per input metric, in input order: nil means acknowledged by all in-sync
+// replicas. The second return value is non-nil only if the batch could not be
+// attempted at all (for example a record failed to encode).
 func (p *KafkaProducer) PublishBatch(ctx context.Context, tenantID string,
-	metrics []model.Metric) (int, error) {
+	metrics []model.Metric) ([]error, error) {
 
 	recs := make([]*kgo.Record, 0, len(metrics))
 	for i := range metrics {
 		rec, err := p.record(tenantID, &metrics[i])
 		if err != nil {
-			return 0, err
+			return nil, err
 		}
 		recs = append(recs, rec)
 	}
 
-	acked, firstErr := 0, error(nil)
-	for _, r := range p.client.ProduceSync(ctx, recs...) {
+	// ProduceSync returns results in the same order as the input records.
+	results := p.client.ProduceSync(ctx, recs...)
+	errs := make([]error, len(metrics))
+	acked := 0
+	for i, r := range results {
 		if r.Err != nil {
 			publishErrors.WithLabelValues(classify(r.Err)).Inc()
-			if firstErr == nil {
-				firstErr = r.Err
-			}
+			errs[i] = r.Err
 			continue
 		}
 		acked++
 	}
 	messagesPublished.Add(float64(acked))
-	return acked, firstErr
+	return errs, nil
 }
 
 // record builds the Kafka record. Key is tenant|host: tenant gives isolation
@@ -138,13 +143,16 @@ func (p *KafkaProducer) Flush(ctx context.Context) error {
 	return p.client.Flush(ctx)
 }
 
-// Close gracefully shuts down the producer.
+// Close flushes outstanding records and shuts the client down. Safe to call
+// more than once.
 func (p *KafkaProducer) Close() {
-	p.logger.Info("shutting down kafka producer")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	_ = p.client.Flush(ctx)
-	p.client.Close()
+	p.closeOnce.Do(func() {
+		p.logger.Info("shutting down kafka producer")
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = p.client.Flush(ctx)
+		p.client.Close()
+	})
 }
 
 // IsHealthy checks if the producer can reach Kafka.

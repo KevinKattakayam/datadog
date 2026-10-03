@@ -1,0 +1,23 @@
+{{- if .Values.serviceMonitor.enabled }}
+{{- range $component, $port := dict "ingestor" "http" "processor" "metrics" }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "obs.fullname" $ }}-{{ $component }}
+  namespace: {{ $.Values.global.namespace }}
+  labels:
+    {{- include "obs.labels" $ | nindent 4 }}
+    {{- with $.Values.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      app: {{ $component }}
+  endpoints:
+    - port: {{ $port }}
+      path: /metrics
+      interval: {{ $.Values.serviceMonitor.interval }}
+{{- end }}
+{{- end }}

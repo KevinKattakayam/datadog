@@ -6,11 +6,26 @@
 |------|---------|---------|
 | Docker | 24+ | Container runtime |
 | Docker Compose | v2.20+ | Multi-container orchestration |
-| Go | 1.22+ | Build/test ingestor |
-| Rust | stable | Build/test processor |
+| Go | 1.25+ | Build/test ingestor (`ingestor/go.mod`); the SDK needs 1.22+ |
+| Rust | 1.86+ | Build/test processor (minimum required by `Cargo.lock`) |
 | Helm | 3.14+ | Kubernetes deployment |
 | k6 | latest | Load testing (optional) |
-| protoc | 3.x | gRPC codegen (optional) |
+| promtool | 2.51+ | `make rules-test` (optional) |
+| kubeconform | 0.6+ | Chart schema validation (optional) |
+
+Building the processor outside Docker compiles librdkafka from source, which
+needs a C toolchain and these headers. librdkafka 2.12 includes `curl/curl.h`
+even with the curl feature disabled, so the curl headers are required:
+
+```bash
+# Debian / Ubuntu
+sudo apt-get install -y build-essential cmake pkg-config libssl-dev libcurl4-openssl-dev
+# macOS
+brew install cmake pkg-config openssl curl
+```
+
+Both images run as UID 65532, the same user the Helm chart enforces, so
+behaviour under Compose matches Kubernetes.
 
 Compose uses `infra/alertmanager/alertmanager.local.yml`, which intentionally
 discards notifications. The production routing example is a template; replace
@@ -29,7 +44,7 @@ replayed. Do not use the local Compose offset policy for production recovery.
 
 ```bash
 # Clone and start the full stack
-git clone https://github.com/Kevinbastin/datadog
+git clone https://github.com/KevinKattakayam/datadog
 cd datadog
 cp .env.example .env     # if available; defaults work without it
 make dev
@@ -76,9 +91,7 @@ curl "http://localhost:8123/?query=SELECT+*+FROM+observability.metrics+ORDER+BY+
 │   ├── alertmanager/     Routing config
 │   ├── otel-collector/   OTLP fan-out config
 │   ├── tempo/            Trace backend config
-│   ├── kafka/            Topic creation scripts
-│   ├── kafka-connect/    ClickHouse sink connector
-│   └── schema-registry/  legacy Avro drafts (not used by the runtime)
+│   └── kafka/            Topic creation scripts
 ├── tests/
 │   ├── integration/      End-to-end pipeline test
 │   └── load/             k6 + Go load generators

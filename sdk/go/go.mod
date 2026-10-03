@@ -1,3 +1,3 @@
-module github.com/Kevinbastin/observability-pipeline/sdk/go
+module github.com/KevinKattakayam/datadog/sdk/go
 
 go 1.22

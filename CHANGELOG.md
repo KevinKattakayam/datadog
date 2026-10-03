@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **EWMA false-alarmed ~37 times per 1,000 points on pure noise at 3 sigma**
+  (theory: ~3). The variance estimate shared the mean's fast smoothing, so it
+  averaged about 6 samples. It now uses a slower smoothing of its own. On the
+  evaluation series, EWMA precision on noise-plus-spikes rose from 0.15 to
+  0.65 and on level shifts from 0.35 to 0.90, with recall unchanged.
+
+### Added
+- `docs/DETECTOR_EVALUATION.md` and `processor/src/detector/eval.rs`: seeded,
+  labelled synthetic series, event-based precision/recall, regression floors
+  in CI, and a documented known limitation (no seasonality). `make detector-eval`.
+- `bench/chaos/rolling_restart_no_loss.sh` (`make chaos-rolling`): graceful
+  restart of the processor or ingestor under load, asserting zero loss.
+- `bench/throughput_median.sh` (`make bench-median`): N-run throughput and
+  latency benchmark reporting medians and the host, written to `bench/results/`.
+- Load generator reports request latency p50/p95/p99.
+
 ## 2.1.0 — hardening pass
 
 ### Fixed (correctness)

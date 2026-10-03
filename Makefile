@@ -6,7 +6,7 @@
        helm-template helm-lint helm-sync-rules helm-check-rules \
        helm-install helm-uninstall rules-test \
        terraform-plan terraform-apply \
-       chaos chaos-kill9 chaos-clickhouse chaos-replay bench-throughput
+       chaos chaos-kill9 chaos-clickhouse chaos-replay bench-throughput bench-median chaos-rolling detector-eval
 
 
 # Colors
@@ -135,6 +135,15 @@ chaos-clickhouse: ## Chaos: pause ClickHouse, assert recovery and zero loss
 
 chaos-replay: ## Chaos: crash after ClickHouse write and verify FINAL deduplication
 	bash bench/chaos/replay_final_no_loss.sh
+
+chaos-rolling: ## Chaos: graceful restart under load (TARGET=processor|ingestor)
+	bash bench/chaos/rolling_restart_no_loss.sh
+
+bench-median: ## Throughput + latency, RUNS runs (>=3), median reported, written to bench/results
+	bash bench/throughput_median.sh
+
+detector-eval: ## Measure detector precision/recall on labelled synthetic series
+	cd processor && cargo test --locked detector::eval -- --nocapture
 
 # ── Helm ──────────────────────────────────────────────────────
 

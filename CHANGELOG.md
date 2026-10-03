@@ -53,3 +53,13 @@
   (was `metric, severity`; metric names are client-controlled).
 - A batch containing invalid items now returns `207` (was `202` with a
   `skipped` count).
+- Both container images run as UID 65532 (was root under Compose), matching
+  the `runAsUser` the Helm chart already enforces. The ingestor runtime base
+  moves from `alpine:3.19` (end of life) to `alpine:3.22`.
+
+### Build
+- librdkafka 2.12 includes `curl/curl.h` even with curl disabled. CI and the
+  processor build image now install `libcurl4-openssl-dev` explicitly instead
+  of relying on it being preinstalled.
+- `docs/DEVELOPMENT.md` lists the real toolchain minimums (Go 1.25, Rust 1.86)
+  and the native packages needed to build the processor outside Docker.

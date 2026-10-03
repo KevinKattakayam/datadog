@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     libssl-dev \
     pkg-config \
+    libcurl4-openssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -32,5 +33,8 @@ RUN apt-get update && apt-get install -y \
 COPY --from=builder /app/target/release/processor /usr/local/bin/processor
 
 EXPOSE 9091
+
+# Same UID the Helm chart enforces (securityContext.runAsUser).
+USER 65532:65532
 
 ENTRYPOINT ["/usr/local/bin/processor"]

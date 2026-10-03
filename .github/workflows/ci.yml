@@ -92,7 +92,7 @@ jobs:
           components: clippy, rustfmt
 
       - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake libssl-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install -y cmake libssl-dev pkg-config libcurl4-openssl-dev
 
       - name: Cache Cargo
         uses: actions/cache@v4

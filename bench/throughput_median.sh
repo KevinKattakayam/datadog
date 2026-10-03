@@ -27,6 +27,7 @@ KAFKA_CONTAINER="${KAFKA_CONTAINER:-obs-kafka}"
 CONSUMER_GROUP="${CONSUMER_GROUP:-processor-group-local}"
 COOLDOWN_SECONDS="${COOLDOWN_SECONDS:-15}"
 MAX_DRAIN_SECONDS="${MAX_DRAIN_SECONDS:-600}"
+STALL_SECONDS="${STALL_SECONDS:-60}"
 OUT_DIR="${OUT_DIR:-bench/results}"
 
 if [ "$RUNS" -lt 3 ]; then
@@ -43,11 +44,18 @@ mkdir -p "$OUT_DIR"
 command -v go >/dev/null || { echo "go is required to build the load tool" >&2; exit 2; }
 go build -o "$WORK/fire" tests/load/fire_metrics.go
 
+# Prints the consumer group's total lag. Fails LOUDLY if Kafka cannot be
+# queried: a silent exit here once hid a dead stack.
 kafka_lag() {
-    docker exec "$KAFKA_CONTAINER" kafka-consumer-groups \
+    local out
+    if ! out=$(docker exec "$KAFKA_CONTAINER" kafka-consumer-groups \
         --bootstrap-server localhost:9092 \
-        --describe --group "$CONSUMER_GROUP" 2>/dev/null \
-        | awk 'NR>1 && $NF!="" {sum+=$6} END {print sum+0}'
+        --describe --group "$CONSUMER_GROUP" 2>&1); then
+        echo "cannot read consumer lag from ${KAFKA_CONTAINER}: ${out}" >&2
+        echo "the stack looks unhealthy; try: docker compose ps" >&2
+        return 1
+    fi
+    printf '%s\n' "$out" | awk 'NR>1 && $NF!="" {sum+=$6} END {print sum+0}'
 }
 
 # median of the numbers on stdin (mean of the middle two for an even count)
@@ -93,15 +101,37 @@ for run in $(seq 1 "$RUNS"); do
     [ "$errs" -eq 0 ] || BAD=1
 
     # Time for the processor to work off the backlog this run created.
+    if [ "$errs" -ne 0 ]; then
+        echo "run ${run}: ${errs} request errors; see the Errors column. Output was:" >&2
+        cat "$WORK/out.$run" >&2
+    fi
     drained=0
     waited=0
+    last_lag=""
+    stalled=0
     while [ "$waited" -lt "$MAX_DRAIN_SECONDS" ]; do
         lag=$(kafka_lag)
         if [ "$lag" -eq 0 ] 2>/dev/null; then drained=1; break; fi
+        if [ "$lag" = "$last_lag" ]; then stalled=$((stalled + 2)); else stalled=0; fi
+        last_lag="$lag"
+        if [ "$stalled" -ge "$STALL_SECONDS" ]; then
+            echo "run ${run}: lag stuck at ${lag} for ${stalled}s. The processor is not consuming" >&2
+            echo "(down, or paused because ClickHouse is unavailable). Container states:" >&2
+            docker ps -a --format '  {{.Names}}: {{.Status}}' >&2 || true
+            echo "ABORTED: run ${run} left the consumer stuck at lag ${lag}. Do not quote these figures." >> "$REPORT"
+            echo "partial report: ${REPORT}" >&2
+            exit 1
+        fi
         sleep 2
         waited=$((waited + 2))
     done
-    [ "$drained" -eq 1 ] || { echo "run ${run}: lag did not drain in ${MAX_DRAIN_SECONDS}s" >&2; BAD=1; }
+    if [ "$drained" -ne 1 ] && [ "$stalled" -lt "$STALL_SECONDS" ]; then
+        echo "run ${run}: lag did not drain in ${MAX_DRAIN_SECONDS}s" >&2
+        BAD=1
+    fi
+    if [ "$BAD" -ne 0 ]; then
+        echo "WARNING: run ${run} was not clean; the report will say so." >> "$REPORT"
+    fi
 
     echo "$tput" >> "$WORK/tput"; echo "$p50" >> "$WORK/p50"
     echo "$p95" >> "$WORK/p95"; echo "$p99" >> "$WORK/p99"; echo "$waited" >> "$WORK/drain"

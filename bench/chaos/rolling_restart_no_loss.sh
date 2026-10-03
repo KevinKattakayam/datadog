@@ -31,6 +31,7 @@ RATE="${RATE:-1000}"
 RESTART_AFTER_SECS="${RESTART_AFTER_SECS:-3}"
 STOP_TIMEOUT_SECS="${STOP_TIMEOUT_SECS:-30}"
 MAX_ATTEMPTS="${MAX_ATTEMPTS:-60}"
+STALL_SECONDS="${STALL_SECONDS:-45}"
 INGESTOR_URL="${INGESTOR_URL:-http://localhost:8080}"
 CLICKHOUSE_URL="${CLICKHOUSE_URL:-http://localhost:8123}"
 KAFKA_CONTAINER="${KAFKA_CONTAINER:-obs-kafka}"
@@ -73,11 +74,18 @@ clickhouse_query() {
     curl -fsS "${CLICKHOUSE_URL}/?query=${encoded}" 2>/dev/null | tr -d '\n'
 }
 
+# Prints the consumer group's total lag. Fails LOUDLY if Kafka cannot be
+# queried: a silent exit here once hid a dead stack.
 kafka_lag() {
-    docker exec "$KAFKA_CONTAINER" kafka-consumer-groups \
+    local out
+    if ! out=$(docker exec "$KAFKA_CONTAINER" kafka-consumer-groups \
         --bootstrap-server localhost:9092 \
-        --describe --group "$CONSUMER_GROUP" 2>/dev/null \
-        | awk 'NR>1 && $NF!="" {sum+=$6} END {print sum+0}'
+        --describe --group "$CONSUMER_GROUP" 2>&1); then
+        echo "cannot read consumer lag from ${KAFKA_CONTAINER}: ${out}" >&2
+        echo "the stack looks unhealthy; try: docker compose ps" >&2
+        return 1
+    fi
+    printf '%s\n' "$out" | awk 'NR>1 && $NF!="" {sum+=$6} END {print sum+0}'
 }
 
 # Sends numbered batches. A batch that is not answered 202 is retried until it
@@ -147,6 +155,8 @@ echo -e "${YELLOW}▸ Waiting for consumer lag to reach zero...${RESET}"
 MAX_WAIT=180
 WAITED=0
 DRAINED=0
+LAST_LAG=""
+STALLED=0
 while [ "$WAITED" -lt "$MAX_WAIT" ]; do
     LAG=$(kafka_lag)
     if [ "$LAG" -eq 0 ] 2>/dev/null; then
@@ -155,6 +165,14 @@ while [ "$WAITED" -lt "$MAX_WAIT" ]; do
         break
     fi
     echo "  Lag: $LAG (${WAITED}s elapsed)"
+    if [ "$LAG" = "$LAST_LAG" ]; then STALLED=$((STALLED + 5)); else STALLED=0; fi
+    LAST_LAG="$LAG"
+    if [ "$STALLED" -ge "$STALL_SECONDS" ]; then
+        echo "consumer lag stuck at ${LAG} for ${STALLED}s: the processor is not consuming" >&2
+        echo "(down, or paused because ClickHouse is unavailable). Container states:" >&2
+        docker ps -a --format '  {{.Names}}: {{.Status}}' >&2 || true
+        exit 1
+    fi
     sleep 5
     WAITED=$((WAITED + 5))
 done

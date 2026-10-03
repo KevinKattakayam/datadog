@@ -6,11 +6,11 @@ Reproduce every number below with:
 make detector-eval        # cargo test --locked detector::eval -- --nocapture
 ```
 
-The series are synthetic and generated from fixed seeds, so the output is
-identical on every run. They show how the detectors behave on four
-well-understood shapes. **They are not a claim about production data.** The
-labelled-dataset item on the roadmap is only partly closed by this: real,
-production-shaped traffic has not been evaluated.
+The first four series below are synthetic and generated from fixed seeds, so
+the output is identical on every run. They show how the detectors behave on
+four well-understood shapes. A second section evaluates real, human-labelled
+series from the Numenta Anomaly Benchmark. **Neither is this pipeline's own
+production traffic.**
 
 Settings match `docker-compose.yml`: EWMA alpha 0.3, Z-score window 300.
 Production fires an alert when **either** detector fires (`registry.rs`).
@@ -79,3 +79,83 @@ get materially worse.
   15, and the combined detector fires on either, so the registry's output is
   not affected. Z-score alone should not be relied on for level shifts.
 - Detector state lives in process memory and resets on restart or rebalance.
+
+## Real data: Numenta Anomaly Benchmark
+
+```bash
+make detector-eval-real     # downloads NAB on first use, then runs the harness
+```
+
+Seven real series (NYC taxi demand, AWS CPU and request latency, machine and
+ambient temperature, and two server metrics) with human-labelled anomaly
+windows. NAB is AGPL-3.0, so the data is downloaded into a git-ignored
+`.nab/` directory and never committed. Each labelled window is an event; an
+alert inside a window is a true positive; every other alert is a false
+positive. The detectors, settings and scoring are the same as above.
+
+**The synthetic results were optimistic.** At the shipped threshold (3.0) the
+combined detector finds nearly every labelled event but is very noisy:
+
+| Series | Recall | Precision | False alarms per 1,000 points |
+|---|---|---|---|
+| `nyc_taxi` | 3 / 5 | 0.83 | 0.1 |
+| `ec2_request_latency` | 3 / 3 | 0.26 | 11.4 |
+| `cpu_utilization_asg` | 1 / 1 | 0.03 | 63.4 |
+| `machine_temperature` | 4 / 4 | 0.11 | 48.7 |
+| `ambient_temperature` | 2 / 2 | 0.25 | 11.3 |
+| `rogue_agent_key_hold` | 2 / 2 | 0.43 | 17.7 |
+| `rogue_agent_key_updown` | 2 / 2 | 0.15 | 19.0 |
+
+Across all seven series (19 events), combined detector:
+
+| Threshold | Events found | Alerts | Precision | False alarms per 1,000 points |
+|---|---|---|---|---|
+| 3.0 (shipped) | 17 / 19 | 2,526 | 0.10 | 36.3 |
+| 4.0 | 14 / 19 | 672 | 0.20 | 8.5 |
+| 5.0 | 11 / 19 | 230 | 0.32 | 2.5 |
+
+Raising the threshold from 3.0 to 4.0 cuts false alarms by roughly four times
+and costs 3 of 19 events. Whether that is the right trade depends on whether
+a missed event or alert fatigue costs more; the shipped default has not
+changed.
+
+### Ideas tried in a prototype (not built into the processor)
+
+`bench/detector_prototype.py` re-implements the two detectors in Python (its
+alert counts match the Rust harness exactly) so ideas can be tested in
+minutes. Run `python3 bench/detector_prototype.py knobs|grouping|seasonal`.
+
+- **Threshold, requiring both detectors, requiring consecutive points.** These
+  only slide along a single trade-off curve between missed events and false
+  alarms. None is a free improvement.
+- **Merging alerts into incidents.** Merging alerts within 48 points cuts 1,527
+  alerts to 201 incidents at threshold 3, but about 170 incidents are still
+  false. It reduces volume, not the number of distinct false alarms.
+- **Removing a seasonal cycle first** is where the measurements are
+  interesting. On `nyc_taxi`, which has a strong weekly cycle:
+
+| Baseline | Threshold | Events found | Incidents | False incidents |
+|---|---|---|---|---|
+| none (shipped) | 4 | 1 / 5 | 1 | 0 |
+| none (shipped) | 5 | 0 / 5 | 0 | 0 |
+| daily | 4 | 2 / 5 | 49 | 46 |
+| weekly | 4 | 5 / 5 | 47 | 32 |
+| weekly | 5 | 5 / 5 | 21 | 12 |
+
+A weekly baseline finds all five events at 4 and 5 sigma, where the shipped
+detector finds one or none, at the cost of roughly one false incident per
+week (about 30 weeks of data). A **daily** baseline on the same series is
+much worse, because weekends differ from weekdays. Applied blindly to every
+series, a daily baseline adds false incidents (685 against 452 at threshold
+3, for one extra event), because most series have no daily cycle.
+
+So seasonality is worth building, but only as an opt-in per metric with a
+configured period; a generic on-by-default version would make most series
+noisier. This is a design decision, not yet an implementation.
+
+### Limits
+
+- Seven series from one benchmark; windows are long and several anomalies are
+  subtle, so absolute scores on NAB are low for detectors of every kind.
+- The detectors were run with fixed settings; nothing was tuned per series.
+- This does not replace evaluating on the pipeline's own traffic.

@@ -6,7 +6,7 @@
        helm-template helm-lint helm-sync-rules helm-check-rules \
        helm-install helm-uninstall rules-test \
        terraform-plan terraform-apply \
-       chaos chaos-kill9 chaos-clickhouse chaos-replay bench-throughput bench-median chaos-rolling detector-eval
+       chaos chaos-kill9 chaos-clickhouse chaos-replay bench-throughput bench-median chaos-rolling detector-eval detector-eval-real
 
 
 # Colors
@@ -141,6 +141,10 @@ chaos-rolling: ## Chaos: graceful restart under load (TARGET=processor|ingestor)
 
 bench-median: ## Throughput + latency, RUNS runs (>=3), median reported, written to bench/results
 	bash bench/throughput_median.sh
+
+detector-eval-real: ## Evaluate detectors on real labelled series (downloads NAB on first use)
+	bash bench/fetch_nab.sh
+	cd processor && NAB_DIR=$(CURDIR)/.nab cargo test --locked detector::eval::nab_report -- --ignored --nocapture
 
 detector-eval: ## Measure detector precision/recall on labelled synthetic series
 	cd processor && cargo test --locked detector::eval -- --nocapture

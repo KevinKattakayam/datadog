@@ -19,6 +19,12 @@
   0.65 and on level shifts from 0.35 to 0.90, with recall unchanged.
 
 ### Added
+- Real-data detector evaluation against the Numenta Anomaly Benchmark
+  (`make detector-eval-real`, `bench/fetch_nab.sh`, data kept out of the repo)
+  and an exploratory Python prototype (`bench/detector_prototype.py`). At the
+  shipped threshold the detector is noisy on real series (precision about
+  0.10, 36 false alarms per 1,000 points); results and the seasonality
+  finding are in `docs/DETECTOR_EVALUATION.md`.
 - `docs/DETECTOR_EVALUATION.md` and `processor/src/detector/eval.rs`: seeded,
   labelled synthetic series, event-based precision/recall, regression floors
   in CI, and a documented known limitation (no seasonality). `make detector-eval`.

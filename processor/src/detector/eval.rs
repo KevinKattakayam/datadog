@@ -223,7 +223,7 @@ fn run(series: &Series, which: Which, threshold: f64) -> Score {
         alerts: alert_at.len(),
         true_alerts,
         false_alerts: alert_at.len() - true_alerts,
-        normal_points: N - event_points,
+        normal_points: series.values.len() - event_points,
     }
 }
 
@@ -346,4 +346,105 @@ fn known_limitation_recurring_batch_is_mostly_false_alarms() {
         s.precision().unwrap_or(1.0) < 0.5,
         "if this now passes precision, update docs/DETECTOR_EVALUATION.md"
     );
+}
+
+// ---- Real data: Numenta Anomaly Benchmark ------------------------------
+//
+// Seven real-world series (NYC taxi demand, AWS CPU and latency, machine
+// temperature) with human-labelled anomaly windows. The data is AGPL-3.0, so
+// it is NOT stored in this repository. Download it and point NAB_DIR at it:
+//
+//   NAB_DIR=/path/to/NAB cargo test --locked detector::eval::nab_report \
+//       -- --ignored --nocapture
+//
+// Each labelled window is an event; an alert inside a window is a true
+// positive. These are real series but not this pipeline's own traffic.
+
+const NAB_SERIES: [&str; 7] = [
+    "nyc_taxi",
+    "ec2_request_latency_system_failure",
+    "cpu_utilization_asg_misconfiguration",
+    "machine_temperature_system_failure",
+    "ambient_temperature_system_failure",
+    "rogue_agent_key_hold",
+    "rogue_agent_key_updown",
+];
+
+fn load_nab(dir: &str, name: &str, labels: &serde_json::Value) -> Series {
+    let csv = std::fs::read_to_string(format!("{dir}/data/realKnownCause/{name}.csv"))
+        .unwrap_or_else(|e| panic!("cannot read {name}.csv: {e}"));
+    let mut stamps: Vec<String> = Vec::new();
+    let mut values: Vec<f64> = Vec::new();
+    for line in csv.lines().skip(1) {
+        let Some((ts, v)) = line.split_once(',') else {
+            continue;
+        };
+        if let Ok(v) = v.trim().parse::<f64>() {
+            // "YYYY-MM-DD HH:MM:SS" sorts correctly as text.
+            stamps.push(ts.chars().take(19).collect());
+            values.push(v);
+        }
+    }
+    let key = format!("realKnownCause/{name}.csv");
+    let mut events = Vec::new();
+    for w in labels[&key].as_array().expect("labels for series") {
+        let start: String = w[0].as_str().unwrap().chars().take(19).collect();
+        let end: String = w[1].as_str().unwrap().chars().take(19).collect();
+        let first = stamps.iter().position(|t| *t >= start);
+        let last = stamps.iter().rposition(|t| *t <= end);
+        if let (Some(a), Some(b)) = (first, last) {
+            if a <= b {
+                events.push((a, b));
+            }
+        }
+    }
+    Series {
+        name: "nab",
+        values,
+        events,
+    }
+}
+
+#[test]
+#[ignore = "needs the NAB data; see the comment above"]
+fn nab_report() {
+    let Ok(dir) = std::env::var("NAB_DIR") else {
+        println!("NAB_DIR is not set; nothing to evaluate");
+        return;
+    };
+    let labels: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(format!("{dir}/labels/combined_windows.json"))
+            .expect("labels file"),
+    )
+    .expect("labels json");
+
+    println!();
+    println!(
+        "{:<38} {:<7} {:<5} {:>6} {:>7} {:>7} {:>7} {:>6}",
+        "series", "det", "thr", "events", "recall", "prec", "alerts", "FP/1k"
+    );
+    for name in NAB_SERIES {
+        let series = load_nab(&dir, name, &labels);
+        for thr in [3.0, 4.0, 5.0] {
+            for which in [Which::Ewma, Which::ZScore, Which::Either] {
+                let s = run(&series, which, thr);
+                let prec = s
+                    .precision()
+                    .map(|p| format!("{:.2}", p))
+                    .unwrap_or_else(|| "n/a".into());
+                println!(
+                    "{:<38} {:<7} {:<5.1} {:>3}/{:<2} {:>7.2} {:>7} {:>7} {:>6.1}",
+                    name,
+                    which.label(),
+                    thr,
+                    s.detected,
+                    s.events,
+                    s.recall(),
+                    prec,
+                    s.alerts,
+                    s.fp_per_1k()
+                );
+            }
+        }
+    }
 }

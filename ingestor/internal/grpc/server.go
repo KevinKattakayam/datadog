@@ -19,8 +19,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Kevinbastin/observability-pipeline/ingestor/internal/model"
-	"github.com/Kevinbastin/observability-pipeline/ingestor/internal/validator"
+	"github.com/KevinKattakayam/datadog/ingestor/internal/model"
+	"github.com/KevinKattakayam/datadog/ingestor/internal/validator"
 )
 
 // ── Types (mirror proto/v1/metric.proto) ─────────────────────

@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package observability.v1;
 
-option go_package = "github.com/Kevinbastin/observability-pipeline/ingestor/proto/v1";
+option go_package = "github.com/KevinKattakayam/datadog/ingestor/proto/v1";
 
 // MetricService provides high-performance binary metric ingestion.
 // Use this endpoint when SDK clients need lower overhead than HTTP/JSON.

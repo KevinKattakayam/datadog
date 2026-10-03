@@ -29,7 +29,7 @@ replayed. Do not use the local Compose offset policy for production recovery.
 
 ```bash
 # Clone and start the full stack
-git clone https://github.com/Kevinbastin/datadog
+git clone https://github.com/KevinKattakayam/datadog
 cd datadog
 cp .env.example .env     # if available; defaults work without it
 make dev

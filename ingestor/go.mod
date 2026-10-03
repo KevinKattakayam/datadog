@@ -1,4 +1,4 @@
-module github.com/Kevinbastin/observability-pipeline/ingestor
+module github.com/KevinKattakayam/datadog/ingestor
 
 go 1.25.0
 

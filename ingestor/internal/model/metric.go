@@ -56,13 +56,29 @@ type BatchRequest struct {
 	Metrics []Metric `json:"metrics" binding:"required,min=1,max=1000"`
 }
 
-// IngestResponse is returned after successful metric ingestion.
+// IngestResponse is returned after metric ingestion.
+//
+// Counts partition the request: accepted + rejected + skipped == len(metrics).
+//   - accepted: acknowledged by every in-sync Kafka replica.
+//   - rejected: valid, but Kafka did not acknowledge; safe to resend.
+//   - skipped:  failed validation; resending unchanged will fail again.
+//
+// Errors lists every non-accepted item by its index in the request, so a
+// client can resend exactly the rejected records instead of the whole batch.
 type IngestResponse struct {
-	Status   string `json:"status"`
-	Accepted int    `json:"accepted"`
-	Rejected int    `json:"rejected,omitempty"`
-	Skipped  int    `json:"skipped,omitempty"`
-	Message  string `json:"message,omitempty"`
+	Status   string      `json:"status"`
+	Accepted int         `json:"accepted"`
+	Rejected int         `json:"rejected,omitempty"`
+	Skipped  int         `json:"skipped,omitempty"`
+	Message  string      `json:"message,omitempty"`
+	Errors   []ItemError `json:"errors,omitempty"`
+}
+
+// ItemError describes why one item of a batch was not accepted.
+type ItemError struct {
+	Index     int    `json:"index"`
+	Error     string `json:"error"`
+	Retryable bool   `json:"retryable"`
 }
 
 // ErrorResponse is returned when a request fails validation or processing.

@@ -23,10 +23,17 @@ type Config struct {
 
 	// Rate limiting
 	RateLimitRPS int
+	// TenantMetricsPerSec is a per-tenant quota counted in metrics, not
+	// requests, so batching cannot bypass it.
+	TenantMetricsPerSec int
+	// MaxBodyBytes bounds a single request body.
+	MaxBodyBytes int64
 
 	// Auth
 	APIKeysPath          string
 	AllowInsecureDevAuth bool
+	// APIKeysReloadInterval polls the key file for rotation; 0 disables.
+	APIKeysReloadInterval time.Duration
 
 	// Graceful shutdown
 	DrainDelay time.Duration
@@ -38,6 +45,9 @@ func Load() *Config {
 	flushIntervalMS := getEnvInt("INGESTOR_FLUSH_INTERVAL_MS", 100)
 	rateLimit := getEnvInt("INGESTOR_RATE_LIMIT_RPS", 10000)
 	drainDelaySeconds := getEnvInt("INGESTOR_DRAIN_DELAY_SECONDS", 15)
+	tenantMetrics := clamp(getEnvInt("INGESTOR_TENANT_METRICS_PER_SEC", 50000), 1, 10000000)
+	maxBodyMiB := clamp(getEnvInt("INGESTOR_MAX_BODY_MIB", 5), 1, 64)
+	reloadSeconds := clamp(getEnvInt("API_KEYS_RELOAD_INTERVAL_SECONDS", 30), 0, 3600)
 	batchSize = clamp(batchSize, 1, 1000)
 	flushIntervalMS = clamp(flushIntervalMS, 10, 60000)
 	rateLimit = clamp(rateLimit, 1, 1000000)
@@ -50,8 +60,11 @@ func Load() *Config {
 		BatchSize:             batchSize,
 		FlushInterval:         time.Duration(flushIntervalMS) * time.Millisecond,
 		RateLimitRPS:          rateLimit,
+		TenantMetricsPerSec:   tenantMetrics,
+		MaxBodyBytes:          int64(maxBodyMiB) << 20,
 		APIKeysPath:           getEnv("API_KEYS_PATH", "/etc/secrets/api-keys"),
 		AllowInsecureDevAuth:  getEnv("AUTH_ALLOW_INSECURE_DEV", "false") == "true",
+		APIKeysReloadInterval: time.Duration(reloadSeconds) * time.Second,
 		DrainDelay:            time.Duration(drainDelaySeconds) * time.Second,
 	}
 }

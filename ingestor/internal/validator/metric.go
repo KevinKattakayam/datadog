@@ -6,8 +6,10 @@ import (
 	"math"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
-	"github.com/Kevinbastin/observability-pipeline/ingestor/internal/model"
+	"github.com/KevinKattakayam/datadog/ingestor/internal/model"
 )
 
 const (
@@ -64,6 +66,9 @@ func ValidateMetric(m *model.Metric) error {
 	if len(m.Host) > MaxHostLength {
 		return fmt.Errorf("host exceeds max length of %d", MaxHostLength)
 	}
+	if !isPrintable(m.Host) {
+		return fmt.Errorf("host must be printable UTF-8 without control characters")
+	}
 
 	// Value must be finite (NaN and Inf poison downstream aggregations)
 	if math.IsNaN(m.Value) || math.IsInf(m.Value, 0) {
@@ -92,6 +97,12 @@ func ValidateMetric(m *model.Metric) error {
 		if len(k) > MaxTagKeyLength || len(v) > MaxTagValueLength {
 			return fmt.Errorf("tag %q exceeds length limits (key max %d, value max %d)", k, MaxTagKeyLength, MaxTagValueLength)
 		}
+		if !isValidTagKey(k) {
+			return fmt.Errorf("tag key %q must be non-empty and use only letters, digits, '_', '.', '-' or '/'", k)
+		}
+		if !isPrintable(v) {
+			return fmt.Errorf("tag %q value must be printable UTF-8 without control characters", k)
+		}
 	}
 
 	return nil
@@ -118,4 +129,33 @@ func isValidMetricName(name string) bool {
 
 func isAlphanumericOrUnderscore(c rune) bool {
 	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+}
+
+// isValidTagKey restricts keys to the charset that survives every downstream
+// system unescaped: Prometheus-style labels, ClickHouse Map keys, Grafana
+// legends, and URL query parameters.
+func isValidTagKey(k string) bool {
+	if k == "" {
+		return false
+	}
+	for _, c := range k {
+		if !isAlphanumericOrUnderscore(c) && c != '.' && c != '-' && c != '/' {
+			return false
+		}
+	}
+	return true
+}
+
+// isPrintable rejects invalid UTF-8 and control characters (newlines, NUL,
+// ANSI escapes), which corrupt log lines and dashboards when echoed back.
+func isPrintable(s string) bool {
+	if !utf8.ValidString(s) {
+		return false
+	}
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
 }

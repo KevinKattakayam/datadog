@@ -16,7 +16,7 @@ keywords:
 
 maintainers:
   - name: Kevin Bastin
-    url: https://github.com/Kevinbastin
+    url: https://github.com/KevinKattakayam
 
 dependencies:
   - name: kafka

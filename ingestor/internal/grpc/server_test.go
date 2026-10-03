@@ -9,7 +9,7 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/Kevinbastin/observability-pipeline/ingestor/internal/model"
+	"github.com/KevinKattakayam/datadog/ingestor/internal/model"
 )
 
 // mockProducer implements KafkaPublisher for testing.

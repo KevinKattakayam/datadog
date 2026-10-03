@@ -70,6 +70,7 @@ async fn main() -> Result<()> {
         &config.clickhouse_user,
         &config.clickhouse_password,
         config.max_write_attempts,
+        std::time::Duration::from_millis(config.clickhouse_timeout_ms),
     )?);
 
     // Initialize alert producer
@@ -82,6 +83,7 @@ async fn main() -> Result<()> {
     let dlq_producer = Arc::new(DlqProducer::new(
         &config.kafka_brokers,
         &config.kafka_topic_dlq,
+        &config.kafka_topic_raw,
     )?);
 
     // Shutdown signal: SIGTERM/SIGINT → drain and exit

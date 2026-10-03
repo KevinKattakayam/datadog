@@ -30,6 +30,7 @@ pub struct Config {
 
     // Write retry
     pub max_write_attempts: u32,
+    pub clickhouse_timeout_ms: u64,
 }
 
 impl Config {
@@ -72,6 +73,8 @@ impl Config {
             detector_capacity: parse_or("PROCESSOR_DETECTOR_CAPACITY", 100_000usize)
                 .clamp(1000, 1_000_000),
             max_write_attempts: parse_or("PROCESSOR_MAX_WRITE_ATTEMPTS", 5u32).clamp(1, 20),
+            clickhouse_timeout_ms: parse_or("PROCESSOR_CLICKHOUSE_TIMEOUT_MS", 30_000u64)
+                .clamp(1_000, 300_000),
         }
     }
 }

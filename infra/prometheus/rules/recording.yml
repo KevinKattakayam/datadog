@@ -39,9 +39,9 @@ groups:
       # ── Anomaly detection rate ───────────────────────────────────
       - record: pipeline:anomaly_rate:ratio5m
         expr: |
-          rate(processor_anomalies_detected_total[5m])
+          sum(rate(processor_anomalies_detected_total[5m]))
           /
-          rate(processor_messages_consumed_total[5m])
+          sum(rate(processor_messages_consumed_total[5m]))
 
       # ── Processor latency percentiles ────────────────────────────
       - record: pipeline:processor_latency:p50

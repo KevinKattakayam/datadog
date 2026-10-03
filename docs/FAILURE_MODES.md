@@ -20,6 +20,7 @@ Every component in the pipeline can fail. This document describes what happens w
 |--------|-----------|
 | **What happens** | Readiness fails (draining=true), sleep past probe period, HTTP server drains, Kafka producer flushes. |
 | **User sees** | Zero 5xx responses, provided the pod leaves the Service before it stops accepting. The chart enforces this at render time: `drainDelaySeconds` (15) must be at least readiness `periodSeconds × failureThreshold` (5 × 2), and `terminationGracePeriodSeconds` (45) must exceed the drain plus the 25s HTTP shutdown. The previous probe settings (10 × 3 = 30s) were longer than the 15s drain. |
+| **Measured (Compose, one replica)** | `/ready` returns 503 immediately on SIGTERM. `/ingest` kept returning 202 through the roughly 15 s drain, then two connection-refused probes about 0.2 s apart while the replacement started. A retrying client lost nothing (`make chaos-rolling`: 60,000 metrics, 1 client retry, 60,000 unique rows). Zero client-visible errors needs two or more replicas behind a Service; that has not been tested. |
 | **Data loss** | None. |
 | **Recovery** | Automatic. |
 
@@ -118,6 +119,17 @@ Every component in the pipeline can fail. This document describes what happens w
 | **User sees** | Complete pipeline halt. |
 | **Data loss** | None — ingestor reports failure, processor doesn't commit. |
 | **Recovery** | Restart the broker. |
+
+### Kafka broker killed for memory (single-node dev)
+
+| Aspect | Behaviour |
+|--------|-----------|
+| **What happens** | The JVM outgrows its container's memory limit and the kernel kills it. Compose has no restart policy, so the broker stays down. Observed twice during sustained-load runs. |
+| **User sees** | Ingestor returns 503. Processor consumer lag freezes at the full backlog. |
+| **Data loss** | Not measured for this case; the affected runs were aborted, not verified. |
+| **Detect** | `journalctl -k \| grep 'Killed process'` shows a `java` kill. `docker top obs-kafka \| grep -o -- '-Xm[sx][0-9A-Za-z]*'` shows the heap. |
+| **Cause and prevention** | With no `KAFKA_HEAP_OPTS` the broker used a 1 GB heap inside a 1 GB limit. The heap is now pinned to 512 MB. |
+| **Recovery** | `make down && make dev`. |
 
 ## Anomaly Detection Failures
 

@@ -48,8 +48,8 @@ cluster and has not been re-run since this pass.
 |---|---|---|
 | Differentiating feature | Cardinality governor (report-only) | `docs/CARDINALITY_GOVERNOR.md` |
 | End-to-end freshness metric on dashboard | Done | `pipeline_end_to_end_lag_seconds`, Pipeline Overview "Freshness and Durability" |
-| k6 throughput, 3 runs, median | **Runner ready, not yet run** | `bench/throughput_median.sh` (`make bench-median`); load tool now reports p50/p95/p99. Mechanics tested against stand-ins only; no real figures exist yet |
-| All chaos scenarios tabulated | **Partly done** | kill -9 and replay recorded in `bench/results/`; `bench/chaos/rolling_restart_no_loss.sh` (`make chaos-rolling`) is written but has not been run against the real stack |
+| k6 throughput, 3 runs, median | **Partly done** | `bench/results/throughput-*.txt`: 2,000, 5,000 and 8,000 metrics/sec, median of three 60 s runs, 0 errors, p99 under 8 ms; ceiling not yet found (`bench/results/README.md`) |
+| All chaos scenarios tabulated | **Done for the single-node stack** | kill -9, replay dedup, graceful processor and ingestor restart under load, in `bench/results/`. A multi-replica rolling update needs Kubernetes and is untested |
 
 ## Week 4 — Presentation
 
@@ -63,8 +63,7 @@ cluster and has not been re-run since this pass.
 
 ## Still open, in priority order
 
-1. Re-run `make integration-test`, `make chaos` and a rolling restart under
-   load against this version; commit the outputs to `bench/results/`.
+1. Find the throughput ceiling (raise `RATE` until errors, drain time or p99 change) and repeat the restart tests on Kubernetes with two or more replicas.
 2. Throughput benchmark (three runs, median, with `env.txt`).
 3. Compose ClickHouse `default` user: set a password, drop
    `CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT`, and update the scripts that query

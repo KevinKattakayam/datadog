@@ -2,7 +2,7 @@
 
 A metrics ingestion and anomaly detection pipeline built with Go, Kafka, Rust, and ClickHouse. The repository includes per-tenant API key authentication and rate limiting, a Kafka dead-letter topic, ClickHouse rollups, Prometheus metrics, Helm deployment templates, and scripts for integration and failure testing.
 
-The processor writes each consumed batch to ClickHouse before committing its Kafka offsets. This gives the data path at-least-once delivery: a crash can cause replay, and ClickHouse deduplication uses tenant, metric, host, timestamp, partition, and offset. Short local integration and recovery smoke results are checked in; they are not a sustained-throughput benchmark or a three-run median.
+The processor writes each consumed batch to ClickHouse before committing its Kafka offsets. This gives the data path at-least-once delivery: a crash can cause replay, and ClickHouse deduplication uses tenant, metric, host, timestamp, partition, and offset. Local integration, recovery and sustained-load results from one laptop are checked in under `bench/results/` with the host described. They are not production capacity figures.
 
 ## Quick start
 
@@ -151,7 +151,7 @@ make chaos-kill9        # SIGKILL processor and check numbered metrics
 make chaos-clickhouse   # pause ClickHouse and check recovery
 ```
 
-The chaos scripts require Docker access and a running local stack. [Captured smoke output and host details](bench/results/) show one local run per recovery scenario. The samples prove the scripted assertions on this machine only; they do not establish production throughput, latency, repeated-run medians, rolling-restart behaviour, or detector quality. Re-run at representative production scale before using those claims externally.
+The chaos and benchmark scripts require Docker access and a running local stack. [Results and host details](bench/results/) cover: SIGKILL mid-stream and replay deduplication (zero loss, duplicates removed); graceful processor and ingestor restarts under load (zero loss); and sustained ingest at 2,000, 5,000 and 8,000 metrics/sec (median of three 60-second runs, no errors, p99 under 8 ms per 100-metric request, processor kept up). Every figure comes from one 8-core laptop that also ran the load generator, so they describe that machine, not production capacity, and the throughput ceiling has not been found. Not measured: detector quality on real data, behaviour with several replicas on Kubernetes (including zero client-visible errors during a rolling update), and long soak runs. Detector quality on synthetic series is in [docs/DETECTOR_EVALUATION.md](docs/DETECTOR_EVALUATION.md).
 
 ## Repository map
 

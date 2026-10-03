@@ -3,7 +3,8 @@
 # ============================================================
 .PHONY: dev down test lint load-test bench logs clean topics build help \
        infra fmt fire integration-test sdk-test \
-       helm-template helm-install helm-uninstall \
+       helm-template helm-lint helm-sync-rules helm-check-rules \
+       helm-install helm-uninstall rules-test \
        terraform-plan terraform-apply \
        chaos chaos-kill9 chaos-clickhouse chaos-replay bench-throughput
 
@@ -137,21 +138,34 @@ chaos-replay: ## Chaos: crash after ClickHouse write and verify FINAL deduplicat
 
 # ── Helm ──────────────────────────────────────────────────────
 
-helm-template: ## Render Helm chart templates (dry-run)
-	@echo "$(CYAN)▸ Rendering Helm templates...$(RESET)"
-	helm dependency build helm/observability-pipeline/
-	helm template obs-pipeline helm/observability-pipeline/ --namespace observability
-	@echo "$(GREEN)✓ Templates rendered$(RESET)"
+CHART := helm/observability-pipeline
+RULE_SOURCES := infra/prometheus/alerts/pipeline.yml infra/prometheus/alerts/slo.yml infra/prometheus/rules/recording.yml
 
-helm-install: ## Deploy pipeline to Kubernetes via Helm
-	@echo "$(CYAN)▸ Installing Helm chart...$(RESET)"
-	helm dependency build helm/observability-pipeline/
-	helm upgrade --install obs-pipeline helm/observability-pipeline/ \
-		--namespace observability --create-namespace
-	@echo "$(GREEN)✓ Helm chart deployed$(RESET)"
+helm-sync-rules: ## Copy Prometheus rules into the chart (PrometheusRule source)
+	@mkdir -p $(CHART)/files/rules
+	cp $(RULE_SOURCES) $(CHART)/files/rules/
+
+helm-check-rules: ## Fail if chart rule copies drifted from infra/prometheus
+	@for f in $(RULE_SOURCES); do diff -q $$f $(CHART)/files/rules/$$(basename $$f) || { echo "run: make helm-sync-rules"; exit 1; }; done
+
+helm-template: ## Render the chart (no subcharts; nothing to download)
+	helm template obs-pipeline $(CHART) --namespace observability
+
+helm-lint: helm-check-rules ## Lint the chart, including the monitoring CRD resources
+	helm lint $(CHART)
+	helm lint $(CHART) --set serviceMonitor.enabled=true --set prometheusRule.enabled=true --set processor.kedaScaling.enabled=true
+
+helm-install: ## Deploy to Kubernetes (create the required Secrets first; see README)
+	helm upgrade --install obs-pipeline $(CHART) --namespace observability --create-namespace
 
 helm-uninstall: ## Uninstall Helm release
 	helm uninstall obs-pipeline --namespace observability
+
+# ── Prometheus rules ──────────────────────────────────────────
+
+rules-test: ## Validate and unit-test Prometheus rules (requires promtool)
+	promtool check rules $(RULE_SOURCES)
+	promtool test rules tests/prometheus/rules_test.yml
 
 terraform-plan: ## Run Terraform plan for AWS EKS
 	@echo "$(CYAN)▸ Planning infrastructure...$(RESET)"

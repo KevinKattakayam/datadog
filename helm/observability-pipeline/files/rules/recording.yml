@@ -1,0 +1,108 @@
+# Prometheus Recording Rules
+# Pre-compute expensive queries for dashboard performance and SLO calculations.
+
+groups:
+  - name: pipeline_recording_rules
+    interval: 30s
+    rules:
+      # ── Ingestor throughput (per-second rate) ────────────────────
+      - record: pipeline:ingestor_requests:rate5m
+        expr: rate(ingestor_requests_total[5m])
+
+      - record: pipeline:ingestor_requests:rate1m
+        expr: rate(ingestor_requests_total[1m])
+
+      # ── Ingestor error rate ──────────────────────────────────────
+      - record: pipeline:ingestor_error_rate:ratio5m
+        expr: |
+          sum(rate(ingestor_requests_total{status_code=~"5.."}[5m]))
+          /
+          sum(rate(ingestor_requests_total[5m]))
+
+      # ── Ingestor latency percentiles ─────────────────────────────
+      - record: pipeline:ingestor_latency:p50
+        expr: histogram_quantile(0.5, rate(ingestor_request_duration_seconds_bucket[5m]))
+
+      - record: pipeline:ingestor_latency:p95
+        expr: histogram_quantile(0.95, rate(ingestor_request_duration_seconds_bucket[5m]))
+
+      - record: pipeline:ingestor_latency:p99
+        expr: histogram_quantile(0.99, rate(ingestor_request_duration_seconds_bucket[5m]))
+
+      # ── Processor throughput ─────────────────────────────────────
+      - record: pipeline:processor_consumed:rate5m
+        expr: rate(processor_messages_consumed_total[5m])
+
+      - record: pipeline:processor_consumed:rate1m
+        expr: rate(processor_messages_consumed_total[1m])
+
+      # ── Anomaly detection rate ───────────────────────────────────
+      - record: pipeline:anomaly_rate:ratio5m
+        expr: |
+          sum(rate(processor_anomalies_detected_total[5m]))
+          /
+          sum(rate(processor_messages_consumed_total[5m]))
+
+      # ── Processor latency percentiles ────────────────────────────
+      - record: pipeline:processor_latency:p50
+        expr: histogram_quantile(0.5, rate(processor_processing_latency_seconds_bucket[5m]))
+
+      - record: pipeline:processor_latency:p95
+        expr: histogram_quantile(0.95, rate(processor_processing_latency_seconds_bucket[5m]))
+
+      - record: pipeline:processor_latency:p99
+        expr: histogram_quantile(0.99, rate(processor_processing_latency_seconds_bucket[5m]))
+
+      # ── ClickHouse write performance ─────────────────────────────
+      - record: pipeline:clickhouse_write:p99
+        expr: histogram_quantile(0.99, rate(processor_clickhouse_write_duration_seconds_bucket[5m]))
+
+      - record: pipeline:clickhouse_errors:rate5m
+        expr: rate(processor_clickhouse_write_errors_total[5m])
+
+  # ── SLO Recording Rules ──────────────────────────────────────────
+  - name: slo_recording_rules
+    interval: 30s
+    rules:
+      # Ingestor availability (non-5xx / total)
+      - record: slo:ingestor_availability:ratio1h
+        expr: |
+          1 - (
+            sum(increase(ingestor_requests_total{status_code=~"5.."}[1h]))
+            /
+            sum(increase(ingestor_requests_total[1h]))
+          )
+
+      - record: slo:ingestor_availability:ratio6h
+        expr: |
+          1 - (
+            sum(increase(ingestor_requests_total{status_code=~"5.."}[6h]))
+            /
+            sum(increase(ingestor_requests_total[6h]))
+          )
+
+      - record: slo:ingestor_availability:ratio24h
+        expr: |
+          1 - (
+            sum(increase(ingestor_requests_total{status_code=~"5.."}[24h]))
+            /
+            sum(increase(ingestor_requests_total[24h]))
+          )
+
+      # Error budget remaining (target: 99.9%)
+      - record: slo:error_budget_remaining:ratio
+        expr: |
+          1 - (
+            (1 - slo:ingestor_availability:ratio24h)
+            /
+            (1 - 0.999)
+          )
+
+      # Pipeline end-to-end latency SLO (target: p99 < 500ms)
+      - record: slo:pipeline_latency_budget:ratio
+        expr: |
+          1 - (
+            sum(rate(ingestor_request_duration_seconds_bucket{le="0.5"}[1h]))
+            /
+            sum(rate(ingestor_request_duration_seconds_count[1h]))
+          )

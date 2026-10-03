@@ -1,0 +1,100 @@
+# promtool unit tests for alerting and recording rules.
+#   promtool test rules tests/prometheus/rules_test.yml
+rule_files:
+  - ../../infra/prometheus/alerts/pipeline.yml
+  - ../../infra/prometheus/rules/recording.yml
+
+evaluation_interval: 15s
+
+tests:
+  # Commits stop while lag exists -> critical, even though the freshness
+  # histogram has gone silent (no commits means no samples).
+  - interval: 15s
+    input_series:
+      - series: 'processor_last_commit_timestamp_seconds{instance="p0"}'
+        values: '0+0x40'          # frozen at t=0
+      - series: 'kafka_consumergroup_lag_sum{consumergroup="processor-group",topic="metrics.raw"}'
+        values: '500+100x40'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: ProcessorCommitStalled
+        exp_alerts: []            # 60s since last commit: not yet
+      - eval_time: 5m
+        alertname: ProcessorCommitStalled
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: processor
+            exp_annotations:
+              summary: "Processor has not committed for over 2 minutes while lag exists"
+              description: "Consumers are not making durable progress. Check ClickHouse, the circuit breaker, and processor logs."
+              runbook_url: "https://github.com/KevinKattakayam/datadog/blob/master/docs/runbooks/freshness.md"
+
+  # Commits keep happening -> no stall alert, even with lag.
+  - interval: 15s
+    input_series:
+      - series: 'processor_last_commit_timestamp_seconds{instance="p0"}'
+        values: '0+15x40'         # advances with wall clock
+      - series: 'kafka_consumergroup_lag_sum{consumergroup="processor-group",topic="metrics.raw"}'
+        values: '500+0x40'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: ProcessorCommitStalled
+        exp_alerts: []
+
+  # Slow but moving pipeline -> freshness warning.
+  - interval: 15s
+    input_series:
+      - series: 'pipeline_end_to_end_lag_seconds_bucket{le="30"}'
+        values: '0+0x80'
+      - series: 'pipeline_end_to_end_lag_seconds_bucket{le="60"}'
+        values: '0+0x80'
+      - series: 'pipeline_end_to_end_lag_seconds_bucket{le="300"}'
+        values: '0+100x80'
+      - series: 'pipeline_end_to_end_lag_seconds_bucket{le="+Inf"}'
+        values: '0+100x80'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: PipelineFreshnessSlow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: pipeline
+            exp_annotations:
+              summary: "p99 ingest-to-queryable latency above 60s"
+              description: "p99 freshness is 4m 57s. Data is arriving but late."
+              runbook_url: "https://github.com/KevinKattakayam/datadog/blob/master/docs/runbooks/freshness.md"
+
+  # Regression test: this recording rule divided vectors with different
+  # label sets (detector,severity vs partition) and was always empty.
+  - interval: 15s
+    input_series:
+      - series: 'processor_anomalies_detected_total{detector="ewma",severity="warning"}'
+        values: '0+3x20'
+      - series: 'processor_anomalies_detected_total{detector="zscore",severity="critical"}'
+        values: '0+3x20'
+      - series: 'processor_messages_consumed_total{partition="0"}'
+        values: '0+30x20'
+      - series: 'processor_messages_consumed_total{partition="1"}'
+        values: '0+30x20'
+    promql_expr_test:
+      - expr: pipeline:anomaly_rate:ratio5m
+        eval_time: 5m
+        exp_samples:
+          - labels: 'pipeline:anomaly_rate:ratio5m'
+            value: 0.1
+
+  - interval: 1m
+    input_series:
+      - series: 'ingestor_api_key_reloads_total{result="failed"}'
+        values: '0+1x40'
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: APIKeyReloadFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: ingestor
+            exp_annotations:
+              summary: "Ingestor cannot reload its API key file"
+              description: "The mounted key file is missing, empty or malformed. The ingestor keeps serving the previous keys, so a rotation has NOT taken effect."

@@ -1,0 +1,81 @@
+# ============================================================
+#  SLO Alert Rules — Multi-Window, Multi-Burn-Rate
+# ============================================================
+#
+#  SLO Target: 99.9% availability (43.8 minutes/month error budget)
+#  Uses Google SRE multi-window approach:
+#    - Fast burn (5m window) catches acute incidents
+#    - Slow burn (6h window) catches gradual degradation
+
+groups:
+  - name: slo.ingestor
+    rules:
+      # ── Recording rules for SLI ──
+      - record: slo:ingestor_requests:error_rate_5m
+        expr: |
+          sum(rate(ingestor_requests_total{status_code=~"5.."}[5m]))
+          /
+          sum(rate(ingestor_requests_total[5m]))
+
+      - record: slo:ingestor_requests:error_rate_1h
+        expr: |
+          sum(rate(ingestor_requests_total{status_code=~"5.."}[1h]))
+          /
+          sum(rate(ingestor_requests_total[1h]))
+
+      - record: slo:ingestor_requests:error_rate_6h
+        expr: |
+          sum(rate(ingestor_requests_total{status_code=~"5.."}[6h]))
+          /
+          sum(rate(ingestor_requests_total[6h]))
+
+      # ── Fast burn: 14.4x burn rate over 5m + 1h ──
+      - alert: SLOBurnRateFast
+        expr: |
+          slo:ingestor_requests:error_rate_5m > (14.4 * 0.001)
+          and
+          slo:ingestor_requests:error_rate_1h > (14.4 * 0.001)
+        for: 2m
+        labels:
+          severity: critical
+          slo: ingestor-availability
+          window: fast
+        annotations:
+          summary: "SLO fast burn — error budget exhausting in <1 hour"
+          description: "5m error rate: {{ $value | humanizePercentage }}. At this rate, the monthly error budget will be consumed in under 1 hour."
+
+      # ── Slow burn: 3x burn rate over 6h ──
+      - alert: SLOBurnRateSlow
+        expr: |
+          slo:ingestor_requests:error_rate_6h > (3 * 0.001)
+        for: 1h
+        labels:
+          severity: warning
+          slo: ingestor-availability
+          window: slow
+        annotations:
+          summary: "SLO slow burn — error budget at risk"
+          description: "6h error rate: {{ $value | humanizePercentage }}. Gradual degradation detected — error budget may be exhausted within the month."
+
+  - name: slo.pipeline_latency
+    rules:
+      # ── End-to-end latency SLO: 99% of requests < 200ms ──
+      - record: slo:ingestor_latency:p99_5m
+        expr: histogram_quantile(0.99, rate(ingestor_request_duration_seconds_bucket[5m]))
+
+      - alert: SLOLatencyBudgetBurn
+        expr: |
+          (
+            1 - (
+              sum(rate(ingestor_request_duration_seconds_bucket{le="0.2"}[1h]))
+              /
+              sum(rate(ingestor_request_duration_seconds_count[1h]))
+            )
+          ) > (3 * 0.01)
+        for: 30m
+        labels:
+          severity: warning
+          slo: ingestor-latency
+        annotations:
+          summary: "Latency SLO burn rate elevated"
+          description: "More than 3% of requests are exceeding the 200ms latency target over the last hour."

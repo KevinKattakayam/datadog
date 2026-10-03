@@ -26,3 +26,12 @@ Not measured here: sustained throughput, ingest latency percentiles,
 end-to-end freshness, three-run medians/spread, rolling restarts under load,
 or detector precision/recall on labelled data. The smoke scenarios do not
 establish a production SLO.
+
+## Mid-stream SIGKILL (2026-10-04)
+
+`SENT=20000 RATE=2000 KILL_AFTER_SECS=3 make chaos-kill9` ([raw output](kill9-midstream-20k.txt)).
+The processor was killed while 17,300 of 20,000 records were still unconsumed.
+After restart: 20,000 sent, 20,000 unique, 20,000 rows, 0 duplicates, 10s
+recovery. Single run on the host in [env.txt](env.txt); not a repeated-run
+median. This run did not hit the write-before-commit window, so it does not
+exercise duplicate replay; see `make chaos-replay` for that.

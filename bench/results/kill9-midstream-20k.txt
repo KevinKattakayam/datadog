@@ -1,0 +1,21 @@
+# Command: SENT=20000 RATE=2000 KILL_AFTER_SECS=3 make chaos-kill9
+# Date: 2026-10-04. Host: see env.txt. Single run. Transcribed from terminal output.
+
+  Chaos Test: kill -9 with zero data loss
+
+  Metrics to send: 20000
+  Rate:            2000/sec
+  Kill after:      3s
+
+Sending 20000 numbered metrics at 2000/sec...
+Waiting 3s then killing processor...
+SIGKILL -> obs-processor
+Waiting for load generator to finish...
+Restarting processor...
+Waiting for consumer lag to reach zero...
+  Lag: 17300 (0s elapsed)
+  Lag: 17300 (5s elapsed)
+  Lag reached zero after 10s
+
+  sent=20000  unique=20000  rows=20000  dupes=0  recovery_seconds=10
+  PASSED - zero data loss

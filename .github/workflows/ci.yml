@@ -246,7 +246,7 @@ jobs:
       # Pinned: a moving @master tag lets an upstream change alter what this
       # job executes with no change in this repository.
       - name: Trivy Image Scan (Ingestor)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
         with:
           image-ref: observability-pipeline/ingestor:${{ github.sha }}
           severity: CRITICAL,HIGH
@@ -254,7 +254,7 @@ jobs:
           exit-code: '1'
 
       - name: Trivy Image Scan (Processor)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
         with:
           image-ref: observability-pipeline/processor:${{ github.sha }}
           severity: CRITICAL,HIGH

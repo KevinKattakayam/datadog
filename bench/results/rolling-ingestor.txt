@@ -1,0 +1,22 @@
+bash bench/chaos/rolling_restart_no_loss.sh
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Chaos Test: graceful restart of ingestor under load
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Metrics to send:  60000
+  Rate:             1000/sec
+  Restart after:    3s (docker restart -t 30)
+
+▸ Sending 60000 numbered metrics at 1000/sec...
+▸ Waiting 3s, then restarting obs-ingestor...
+▸ obs-ingestor restarted in 16s
+▸ Waiting for load generator to finish...
+▸ Waiting for consumer lag to reach zero...
+  Lag reached zero after 0s
+
+▸ Verifying results...
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  target=ingestor  sent=60000  unique=60000  rows=60000  dupes=0  client_retries=1  restart_seconds=16  drain_seconds=0
+  ✓ PASSED — zero data loss across a graceful restart
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

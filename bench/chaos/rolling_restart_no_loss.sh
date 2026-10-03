@@ -15,6 +15,10 @@
 #                    during the restart fail and the load generator
 #                    retries them. This checks that nothing the ingestor
 #                    ACCEPTED is lost and that retried batches recover.
+#                    Requests are paced evenly, so the restart gap (well
+#                    under a second) is always crossed and client_retries
+#                    should be at least 1. If it is 0 the retry path was
+#                    not exercised and the run proves less than it appears.
 #                    It does NOT prove zero client-visible errors; that
 #                    needs two or more replicas behind a Service, which
 #                    only Kubernetes provides.
@@ -31,6 +35,7 @@ RATE="${RATE:-1000}"
 RESTART_AFTER_SECS="${RESTART_AFTER_SECS:-3}"
 STOP_TIMEOUT_SECS="${STOP_TIMEOUT_SECS:-30}"
 MAX_ATTEMPTS="${MAX_ATTEMPTS:-60}"
+STALL_SECONDS="${STALL_SECONDS:-45}"
 INGESTOR_URL="${INGESTOR_URL:-http://localhost:8080}"
 CLICKHOUSE_URL="${CLICKHOUSE_URL:-http://localhost:8123}"
 KAFKA_CONTAINER="${KAFKA_CONTAINER:-obs-kafka}"
@@ -73,11 +78,18 @@ clickhouse_query() {
     curl -fsS "${CLICKHOUSE_URL}/?query=${encoded}" 2>/dev/null | tr -d '\n'
 }
 
+# Prints the consumer group's total lag. Fails LOUDLY if Kafka cannot be
+# queried: a silent exit here once hid a dead stack.
 kafka_lag() {
-    docker exec "$KAFKA_CONTAINER" kafka-consumer-groups \
+    local out
+    if ! out=$(docker exec "$KAFKA_CONTAINER" kafka-consumer-groups \
         --bootstrap-server localhost:9092 \
-        --describe --group "$CONSUMER_GROUP" 2>/dev/null \
-        | awk 'NR>1 && $NF!="" {sum+=$6} END {print sum+0}'
+        --describe --group "$CONSUMER_GROUP" 2>&1); then
+        echo "cannot read consumer lag from ${KAFKA_CONTAINER}: ${out}" >&2
+        echo "the stack looks unhealthy; try: docker compose ps" >&2
+        return 1
+    fi
+    printf '%s\n' "$out" | awk 'NR>1 && $NF!="" {sum+=$6} END {print sum+0}'
 }
 
 # Sends numbered batches. A batch that is not answered 202 is retried until it
@@ -86,6 +98,12 @@ kafka_lag() {
 fire_metrics() {
     local total_batches=$((SENT / BATCH_SIZE))
     local batches_per_sec=$((RATE / BATCH_SIZE))
+    # Spread requests evenly (one every 1/batches_per_sec seconds) instead of
+    # a burst followed by a long sleep. A burst-then-sleep pattern leaves
+    # nothing in flight most of the time, so a sub-second outage during the
+    # restart is crossed only by chance and the retry path goes untested.
+    local pace
+    pace=$(awk -v n="$batches_per_sec" 'BEGIN { printf "%.3f", 1 / n }')
     local retries=0
     local batch_num=0
     local ts
@@ -116,9 +134,7 @@ fire_metrics() {
         done
 
         batch_num=$((batch_num + 1))
-        if [ $((batch_num % batches_per_sec)) -eq 0 ]; then
-            sleep 1
-        fi
+        sleep "$pace"
     done
     echo "retries=$retries failed=0" > "$STATS_FILE"
 }
@@ -147,6 +163,8 @@ echo -e "${YELLOW}▸ Waiting for consumer lag to reach zero...${RESET}"
 MAX_WAIT=180
 WAITED=0
 DRAINED=0
+LAST_LAG=""
+STALLED=0
 while [ "$WAITED" -lt "$MAX_WAIT" ]; do
     LAG=$(kafka_lag)
     if [ "$LAG" -eq 0 ] 2>/dev/null; then
@@ -155,6 +173,14 @@ while [ "$WAITED" -lt "$MAX_WAIT" ]; do
         break
     fi
     echo "  Lag: $LAG (${WAITED}s elapsed)"
+    if [ "$LAG" = "$LAST_LAG" ]; then STALLED=$((STALLED + 5)); else STALLED=0; fi
+    LAST_LAG="$LAG"
+    if [ "$STALLED" -ge "$STALL_SECONDS" ]; then
+        echo "consumer lag stuck at ${LAG} for ${STALLED}s: the processor is not consuming" >&2
+        echo "(down, or paused because ClickHouse is unavailable). Container states:" >&2
+        docker ps -a --format '  {{.Names}}: {{.Status}}' >&2 || true
+        exit 1
+    fi
     sleep 5
     WAITED=$((WAITED + 5))
 done

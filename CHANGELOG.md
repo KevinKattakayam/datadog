@@ -3,6 +3,15 @@
 ## Unreleased
 
 ### Fixed
+- **The Kafka broker was OOM-killed under sustained load** in Compose: with no
+  heap setting it ran a 1 GB heap inside a 1 GB container limit. The heap is
+  pinned to 512 MB (`KAFKA_HEAP_OPTS`). The 60,000-metric restart test that
+  failed now passes.
+- Benchmark and restart scripts exited silently when Kafka could not be
+  queried, and waited minutes on a stuck consumer. They now say why and stop.
+- The restart test sent requests in bursts, so the sub-second ingestor restart
+  gap was crossed only by chance and the retry path was never exercised.
+  Requests are now evenly paced.
 - **EWMA false-alarmed ~37 times per 1,000 points on pure noise at 3 sigma**
   (theory: ~3). The variance estimate shared the mean's fast smoothing, so it
   averaged about 6 samples. It now uses a slower smoothing of its own. On the

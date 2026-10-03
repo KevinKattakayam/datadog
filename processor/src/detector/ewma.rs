@@ -7,6 +7,10 @@
 // Fix: a near-zero variance now triggers relative-deviation fallback instead
 // of returning z_score=0.0. A perfectly stable metric that suddenly moves is
 // the *strongest* signal, not the weakest.
+//
+// Fix: the variance is smoothed ~6x more slowly than the mean. Sharing one
+// alpha made the variance a ~6-sample estimate, which false-alarmed 37 times
+// per 1,000 points on pure noise at 3 sigma. See docs/DETECTOR_EVALUATION.md.
 
 use super::{AnomalyDetector, DetectionResult};
 use crate::model::{AlertSeverity, RawMetric};
@@ -16,6 +20,11 @@ use crate::model::{AlertSeverity, RawMetric};
 pub struct EwmaDetector {
     /// Smoothing factor (0 < alpha < 1). Higher = more reactive.
     alpha: f64,
+    /// Smoothing factor for the variance estimate. Deliberately much slower
+    /// than `alpha`: the mean needs to track the metric, but a variance built
+    /// from the same ~6-sample window is so noisy that a 3-sigma threshold
+    /// fires about 37 times per 1,000 points on pure Gaussian noise.
+    variance_alpha: f64,
     /// Current exponentially weighted moving average.
     ewma: f64,
     /// Current exponentially weighted variance.
@@ -43,6 +52,7 @@ impl EwmaDetector {
         let alpha = alpha.clamp(0.01, 0.99);
         EwmaDetector {
             alpha,
+            variance_alpha: (alpha / 6.0).clamp(0.01, alpha),
             ewma: 0.0,
             variance: 0.0,
             threshold_sigmas,
@@ -95,9 +105,12 @@ impl EwmaDetector {
             }
         };
 
-        // Now update EWMA and variance
+        // Now update EWMA and variance. While fewer than 1/variance_alpha
+        // samples have been seen, weight each one by 1/n (a plain running
+        // estimate) so the variance is not biased toward its zero start.
+        let var_alpha = self.variance_alpha.max(1.0 / self.count as f64);
         self.ewma += self.alpha * diff;
-        self.variance = (1.0 - self.alpha) * (self.variance + self.alpha * diff * diff);
+        self.variance = (1.0 - var_alpha) * (self.variance + var_alpha * diff * diff);
 
         // Don't flag anomalies during warm-up period
         if self.count < self.min_samples {

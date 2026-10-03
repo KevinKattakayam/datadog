@@ -48,8 +48,8 @@ cluster and has not been re-run since this pass.
 |---|---|---|
 | Differentiating feature | Cardinality governor (report-only) | `docs/CARDINALITY_GOVERNOR.md` |
 | End-to-end freshness metric on dashboard | Done | `pipeline_end_to_end_lag_seconds`, Pipeline Overview "Freshness and Durability" |
-| k6 throughput, 3 runs, median | **Open** | needs a dedicated load environment |
-| All chaos scenarios tabulated | **Open** | rolling-restart scenario not yet scripted |
+| k6 throughput, 3 runs, median | **Runner ready, not yet run** | `bench/throughput_median.sh` (`make bench-median`); load tool now reports p50/p95/p99. Mechanics tested against stand-ins only; no real figures exist yet |
+| All chaos scenarios tabulated | **Partly done** | kill -9 and replay recorded in `bench/results/`; `bench/chaos/rolling_restart_no_loss.sh` (`make chaos-rolling`) is written but has not been run against the real stack |
 
 ## Week 4 — Presentation
 
@@ -70,4 +70,4 @@ cluster and has not been re-run since this pass.
    `CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT`, and update the scripts that query
    ClickHouse with `curl` to authenticate.
 4. TLS and SASL for Kafka and ClickHouse in the chart.
-5. Detector precision/recall against a labelled dataset.
+5. Detector precision/recall on real, production-shaped data. Synthetic series are done: see `docs/DETECTOR_EVALUATION.md` (`make detector-eval`).

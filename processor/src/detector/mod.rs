@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod eval;
 pub mod ewma;
 pub mod registry;
 pub mod zscore;

@@ -12,6 +12,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -60,6 +61,9 @@ func main() {
 
 	var sent atomic.Int64
 	var errors atomic.Int64
+	// Request latency of successful batches, for the percentile summary.
+	var latMu sync.Mutex
+	var latencies []time.Duration
 	client := &http.Client{Timeout: 10 * time.Second}
 
 	interval := time.Duration(float64(time.Second) * float64(*batch) / float64(*rate))
@@ -83,6 +87,12 @@ func main() {
 			fmt.Printf("   Sent:        %d metrics\n", totalSent)
 			fmt.Printf("   Errors:      %d\n", totalErrors)
 			fmt.Printf("   Throughput:  %.0f metrics/sec\n", float64(totalSent)/elapsed.Seconds())
+			latMu.Lock()
+			p50, p95, p99 := percentiles(latencies)
+			latMu.Unlock()
+			fmt.Printf("   Latency p50: %.1f ms\n", p50)
+			fmt.Printf("   Latency p95: %.1f ms\n", p95)
+			fmt.Printf("   Latency p99: %.1f ms\n", p99)
 			if totalErrors > 0 {
 				os.Exit(1)
 			}
@@ -94,14 +104,37 @@ func main() {
 				defer wg.Done()
 				defer func() { <-inFlight }()
 				metrics := generateBatch(*batch)
+				began := time.Now()
 				if err := sendBatch(client, metrics); err != nil {
 					errors.Add(1)
 				} else {
 					sent.Add(int64(len(metrics)))
+					took := time.Since(began)
+					latMu.Lock()
+					latencies = append(latencies, took)
+					latMu.Unlock()
 				}
 			}()
 		}
 	}
+}
+
+// percentiles returns p50, p95 and p99 in milliseconds using the nearest-rank
+// method. It returns zeros for an empty sample.
+func percentiles(d []time.Duration) (p50, p95, p99 float64) {
+	if len(d) == 0 {
+		return 0, 0, 0
+	}
+	sorted := append([]time.Duration(nil), d...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	at := func(q float64) float64 {
+		rank := int(math.Ceil(q*float64(len(sorted)))) - 1
+		if rank < 0 {
+			rank = 0
+		}
+		return float64(sorted[rank]) / float64(time.Millisecond)
+	}
+	return at(0.50), at(0.95), at(0.99)
 }
 
 func generateBatch(size int) []Metric {

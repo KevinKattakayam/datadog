@@ -19,6 +19,11 @@
   0.65 and on level shifts from 0.35 to 0.90, with recall unchanged.
 
 ### Added
+- `processor/src/detector/seasonal.rs`: a per-time-of-day baseline, with an
+  online measure of how seasonal a series is and an `auto` policy in the
+  evaluation harness. Not wired into the processor. On real NYC-taxi data it
+  finds 5 of 5 labelled events at threshold 4 where the shipped rule finds 1,
+  at the cost of many more alerts; see `docs/DETECTOR_EVALUATION.md`.
 - Real-data detector evaluation against the Numenta Anomaly Benchmark
   (`make detector-eval-real`, `bench/fetch_nab.sh`, data kept out of the repo)
   and an exploratory Python prototype (`bench/detector_prototype.py`). At the

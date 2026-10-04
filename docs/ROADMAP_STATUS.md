@@ -69,4 +69,4 @@ cluster and has not been re-run since this pass.
    `CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT`, and update the scripts that query
    ClickHouse with `curl` to authenticate.
 4. TLS and SASL for Kafka and ClickHouse in the chart.
-5. Detector quality: measured on synthetic series and on real labelled data (NAB), see `docs/DETECTOR_EVALUATION.md`. On real data the shipped threshold is noisy (precision about 0.10). Opt-in seasonality is the next step; a prototype shows it takes `nyc_taxi` from 1/5 to 5/5 events at 4 sigma. Not yet built.
+5. Detector quality: measured on synthetic series and on real labelled data (NAB), see `docs/DETECTOR_EVALUATION.md`. On real data the shipped threshold is noisy (precision about 0.10). A daily seasonal baseline exists (`seasonal.rs`) and is measured, but is not wired into the processor: it needs an opt-in configuration, incident grouping, and a better-grounded strength cut-off.

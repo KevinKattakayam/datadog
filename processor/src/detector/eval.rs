@@ -19,7 +19,7 @@
 //! detectors are expected to handle badly. They are not a claim about
 //! production data.
 
-use super::{ewma::EwmaDetector, zscore::ZScoreDetector};
+use super::{ewma::EwmaDetector, seasonal::SeasonalDetector, zscore::ZScoreDetector};
 
 const N: usize = 3000;
 const WARMUP: usize = 300;
@@ -27,12 +27,32 @@ const RECOVERY_TOLERANCE: usize = 2;
 /// Same values `docker-compose.yml` runs the processor with.
 const ALPHA: f64 = 0.3;
 const WINDOW: usize = 300;
+/// Synthetic series are sampled every 5 minutes; 288 points make a day.
+const STEP_SECS: i64 = 300;
+const SEASON_PERIOD_SECS: i64 = 86_400;
+const SEASON_BUCKETS: usize = 24;
+/// Strength of the daily pattern above which `Auto` trusts the seasonal model.
+const AUTO_STRENGTH_MIN: f64 = 0.5;
+const ALL_DETECTORS: [Which; 6] = [
+    Which::Ewma,
+    Which::ZScore,
+    Which::Either,
+    Which::Seasonal,
+    Which::Gated,
+    Which::Auto,
+];
 
 struct Series {
     name: &'static str,
     values: Vec<f64>,
+    /// Unix timestamp of each point (the seasonal detector keys on it).
+    times: Vec<i64>,
     /// Inclusive (start, end) index spans of labelled anomalies.
     events: Vec<(usize, usize)>,
+}
+
+fn step_times(n: usize) -> Vec<i64> {
+    (0..n).map(|i| i as i64 * STEP_SECS).collect()
 }
 
 /// Standard normal sample (Box-Muller).
@@ -57,6 +77,7 @@ fn noisy_spikes() -> Series {
     }
     Series {
         name: "noisy_spikes",
+        times: step_times(N),
         values,
         events,
     }
@@ -76,6 +97,7 @@ fn flat_gauge() -> Series {
     }
     Series {
         name: "flat_gauge",
+        times: step_times(N),
         values,
         events,
     }
@@ -95,6 +117,7 @@ fn level_shift() -> Series {
     }
     Series {
         name: "level_shift",
+        times: step_times(N),
         values,
         events,
     }
@@ -132,6 +155,7 @@ fn recurring_batch() -> Series {
     }
     Series {
         name: "recurring_batch",
+        times: step_times(N),
         values,
         events,
     }
@@ -142,6 +166,15 @@ enum Which {
     Ewma,
     ZScore,
     Either,
+    /// The seasonal baseline alone.
+    Seasonal,
+    /// Seasonal baseline where the series shows a strong daily pattern,
+    /// otherwise the plain either-detector rule.
+    Auto,
+    /// EWMA-or-Z-score alerts, kept only where the seasonal baseline also
+    /// calls the value abnormal for its time of day. Where the slot has not
+    /// warmed up yet it falls back to the plain either-detector rule.
+    Gated,
 }
 
 impl Which {
@@ -150,6 +183,9 @@ impl Which {
             Which::Ewma => "ewma",
             Which::ZScore => "zscore",
             Which::Either => "either",
+            Which::Seasonal => "season",
+            Which::Gated => "gated",
+            Which::Auto => "auto",
         }
     }
 }
@@ -183,6 +219,7 @@ impl Score {
 fn run(series: &Series, which: Which, threshold: f64) -> Score {
     let mut ewma = EwmaDetector::new(ALPHA, threshold);
     let mut zscore = ZScoreDetector::new(WINDOW, threshold);
+    let mut seasonal = SeasonalDetector::new(SEASON_PERIOD_SECS, SEASON_BUCKETS, threshold);
 
     let mut alert_at = Vec::new();
     for (i, v) in series.values.iter().enumerate() {
@@ -190,10 +227,29 @@ fn run(series: &Series, which: Which, threshold: f64) -> Score {
         // production, where the registry updates both on every metric.
         let e = ewma.update(*v).0;
         let z = zscore.update(*v).0;
+        let t = series.times[i];
+        let ready = seasonal.is_ready(t);
+        let strong = seasonal.strength() >= AUTO_STRENGTH_MIN;
+        let sea = seasonal.update(*v, t).0;
         let fired = match which {
+            Which::Auto => {
+                if strong {
+                    sea
+                } else {
+                    e || z
+                }
+            }
             Which::Ewma => e,
             Which::ZScore => z,
             Which::Either => e || z,
+            Which::Seasonal => sea,
+            Which::Gated => {
+                if ready {
+                    (e || z) && sea
+                } else {
+                    e || z
+                }
+            }
         };
         if fired {
             alert_at.push(i);
@@ -227,6 +283,15 @@ fn run(series: &Series, which: Which, threshold: f64) -> Score {
     }
 }
 
+/// Daily-pattern strength after the whole series has been seen.
+fn final_strength(series: &Series) -> f64 {
+    let mut d = SeasonalDetector::new(SEASON_PERIOD_SECS, SEASON_BUCKETS, 3.0);
+    for (v, t) in series.values.iter().zip(&series.times) {
+        d.update(*v, *t);
+    }
+    d.strength()
+}
+
 fn all_series() -> Vec<Series> {
     vec![
         noisy_spikes(),
@@ -245,8 +310,13 @@ fn report() {
         "series", "det", "thr", "events", "recall", "prec", "alerts", "FP/1k"
     );
     for series in all_series() {
+        println!(
+            "# {} daily-pattern strength {:.2}",
+            series.name,
+            final_strength(&series)
+        );
         for thr in [3.0, 4.0, 5.0] {
-            for which in [Which::Ewma, Which::ZScore, Which::Either] {
+            for which in ALL_DETECTORS {
                 let s = run(&series, which, thr);
                 let prec = s
                     .precision()
@@ -370,11 +440,30 @@ const NAB_SERIES: [&str; 7] = [
     "rogue_agent_key_updown",
 ];
 
+/// Unix seconds for "YYYY-MM-DD HH:MM:SS" (UTC; only differences matter here).
+fn epoch_secs(ts: &str) -> i64 {
+    if ts.len() < 19 || !ts.is_char_boundary(19) {
+        return 0;
+    }
+    let n = |a: usize, b: usize| ts[a..b].parse::<i64>().unwrap_or(0);
+    let (y, m, d) = (n(0, 4), n(5, 7), n(8, 10));
+    let (hh, mm, ss) = (n(11, 13), n(14, 16), n(17, 19));
+    // Days from civil date (Howard Hinnant's algorithm).
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    (era * 146_097 + doe - 719_468) * 86_400 + hh * 3600 + mm * 60 + ss
+}
+
 fn load_nab(dir: &str, name: &str, labels: &serde_json::Value) -> Series {
     let csv = std::fs::read_to_string(format!("{dir}/data/realKnownCause/{name}.csv"))
         .unwrap_or_else(|e| panic!("cannot read {name}.csv: {e}"));
     let mut stamps: Vec<String> = Vec::new();
     let mut values: Vec<f64> = Vec::new();
+    let mut times: Vec<i64> = Vec::new();
     for line in csv.lines().skip(1) {
         let Some((ts, v)) = line.split_once(',') else {
             continue;
@@ -382,6 +471,7 @@ fn load_nab(dir: &str, name: &str, labels: &serde_json::Value) -> Series {
         if let Ok(v) = v.trim().parse::<f64>() {
             // "YYYY-MM-DD HH:MM:SS" sorts correctly as text.
             stamps.push(ts.chars().take(19).collect());
+            times.push(epoch_secs(ts));
             values.push(v);
         }
     }
@@ -400,6 +490,7 @@ fn load_nab(dir: &str, name: &str, labels: &serde_json::Value) -> Series {
     }
     Series {
         name: "nab",
+        times,
         values,
         events,
     }
@@ -425,8 +516,13 @@ fn nab_report() {
     );
     for name in NAB_SERIES {
         let series = load_nab(&dir, name, &labels);
+        println!(
+            "# {} daily-pattern strength {:.2}",
+            name,
+            final_strength(&series)
+        );
         for thr in [3.0, 4.0, 5.0] {
-            for which in [Which::Ewma, Which::ZScore, Which::Either] {
+            for which in ALL_DETECTORS {
                 let s = run(&series, which, thr);
                 let prec = s
                     .precision()
@@ -446,5 +542,47 @@ fn nab_report() {
                 );
             }
         }
+    }
+}
+
+#[test]
+fn epoch_conversion_matches_known_values() {
+    assert_eq!(epoch_secs("1970-01-01 00:00:00"), 0);
+    assert_eq!(epoch_secs("2014-07-01 00:30:00"), 1_404_174_600);
+    assert_eq!(epoch_secs("2000-03-01 00:00:00"), 951_868_800);
+}
+
+/// Where the daily pattern is real, trusting the seasonal baseline finds the
+/// injected spikes the plain rule misses and stops flagging the normal burst.
+#[test]
+fn auto_policy_fixes_recurring_batch_where_either_cannot() {
+    let series = find("recurring_batch");
+    let either = run(&series, Which::Either, 4.0);
+    let auto = run(&series, Which::Auto, 4.0);
+    assert_eq!(auto.detected, auto.events, "auto must find every spike");
+    assert!(auto.recall() > either.recall());
+    assert!(
+        auto.precision().unwrap_or(0.0) >= 0.35,
+        "auto precision {:?} (either was {:?})",
+        auto.precision(),
+        either.precision()
+    );
+}
+
+/// Where there is no daily pattern, `Auto` must not behave worse than the
+/// plain rule.
+#[test]
+fn auto_policy_does_not_regress_series_without_a_daily_pattern() {
+    for name in ["noisy_spikes", "flat_gauge"] {
+        let series = find(name);
+        let either = run(&series, Which::Either, 3.0);
+        let auto = run(&series, Which::Auto, 3.0);
+        assert!(auto.detected >= either.detected, "{name}: recall regressed");
+        assert!(
+            auto.false_alerts <= either.false_alerts + 2,
+            "{name}: false alarms {} vs {}",
+            auto.false_alerts,
+            either.false_alerts
+        );
     }
 }

@@ -149,9 +149,50 @@ much worse, because weekends differ from weekdays. Applied blindly to every
 series, a daily baseline adds false incidents (685 against 452 at threshold
 3, for one extra event), because most series have no daily cycle.
 
-So seasonality is worth building, but only as an opt-in per metric with a
-configured period; a generic on-by-default version would make most series
-noisier. This is a design decision, not yet an implementation.
+So seasonality is worth building, but a generic on-by-default version would
+make most series noisier. The next section is a Rust implementation of that
+idea, measured in the same harness; it is not wired into the processor.
+
+### A seasonal baseline, built in Rust and measured (not wired in)
+
+`processor/src/detector/seasonal.rs` keeps one baseline per time-of-day slot
+(24 hourly slots over a 24-hour cycle, about 600 bytes per series) and scores a
+value against the history of its own slot, using the sample's own timestamp.
+The harness (`make detector-eval`, `make detector-eval-real`) scores it three
+ways: alone (`season`), as a filter on the existing alerts (`gated`), and as
+`auto`: use the seasonal baseline only where the series' daily pattern explains
+at least half of its variance (measured online), otherwise the plain
+either-detector rule.
+
+`auto` at threshold 4.0, against the shipped rule:
+
+| Series | Daily-pattern strength | Shipped rule | `auto` |
+|---|---|---|---|
+| `nyc_taxi` (real) | 0.54 | 1 / 5 events, 2 alerts, precision 1.00 | **5 / 5 events**, 74 alerts, precision 0.41 |
+| `recurring_batch` (synthetic) | 0.99 | 6 / 9 events, 79 alerts, precision 0.08 | **9 / 9 events**, 20 alerts, precision 0.45 |
+
+At the shipped threshold 3.0, `nyc_taxi` goes from 3 / 5 events and 6 alerts to
+5 / 5 events and 198 alerts. Of the nine other series, seven score identically
+and two change slightly (`machine_temperature` at 4.0: 333 to 508 alerts;
+`level_shift` at 4.0: 46 to 62 alerts).
+
+This is a **trade, not a free win**. On `nyc_taxi`, `auto` finds the four real
+events the shipped rule misses, and pays for it with dozens of extra alerts.
+Grouping them into incidents would shrink that cost; the prototype above shows
+how far.
+
+Tried and dropped: `gated` (keep an alert only if the seasonal baseline agrees)
+loses real events on real data (`machine_temperature` 4 / 4 to 1 / 4 and
+`nyc_taxi` 3 / 5 to 1 / 5 at threshold 3.0). `season` alone catches every event
+on every NAB series at thresholds 3.0 and 4.0 (and on every synthetic series at
+3.0) but is noisier than the shipped rule on series with no daily
+pattern (`rogue_agent_key_hold` precision 0.11 against 0.43).
+
+The Python prototype's weekly baseline also reaches 5 / 5 on `nyc_taxi`. The two
+implementations differ (the prototype subtracts a cycle, re-runs the detectors
+and counts merged incidents; the Rust detector scores per slot and counts
+alerts), so alert and incident counts are not comparable. The Rust detector
+accepts any period, but only the daily setting has been measured.
 
 ### Limits
 
@@ -159,3 +200,10 @@ noisier. This is a design decision, not yet an implementation.
   subtle, so absolute scores on NAB are low for detectors of every kind.
 - The detectors were run with fixed settings; nothing was tuned per series.
 - This does not replace evaluating on the pipeline's own traffic.
+- The `auto` strength cut-off (0.5) was set by looking at these eleven series,
+  and only one real series (`nyc_taxi`, 0.54) is above it while another
+  (`rogue_agent_key_hold`, 0.47) is just below. That is one real positive
+  example; the cut-off is fragile and should be revisited on more data before
+  `auto` is enabled anywhere.
+- The seasonal detector is not registered in `registry.rs`, has no
+  configuration, and does not persist its baselines across restarts.

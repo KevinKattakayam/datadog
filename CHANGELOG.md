@@ -3,6 +3,13 @@
 ## Unreleased
 
 ### Fixed
+- **A pre-existing ClickHouse volume stalled the whole pipeline.** The bootstrap
+  upgrade added `tenant_id` to `metrics` but not to `alerts`, so any batch that
+  fired an alert failed with `NO_SUCH_COLUMN_IN_TABLE`, the circuit breaker
+  opened, and consumption stopped. The column is now added, and
+  `make integration-test` checks that every column the processor writes exists.
+  Benchmark and restart scripts also print the processor's last errors when they
+  abort.
 - **Benchmarks reported a stalled processor as fully drained.** Kafka prints
   `-` in the LAG column for a partition with no committed offset, and the
   scripts summed that as zero. Such partitions now count as fully unconsumed,

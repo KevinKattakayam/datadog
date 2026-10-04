@@ -14,6 +14,7 @@ ch --multiquery --query "
   GRANT SELECT ON observability.* TO grafana_ro;
   ALTER TABLE observability.metrics ADD COLUMN IF NOT EXISTS tenant_id LowCardinality(String) DEFAULT 'default' AFTER ts;
   ALTER TABLE observability.metrics ADD COLUMN IF NOT EXISTS ingested_at DateTime64(3) DEFAULT now64(3);
+  ALTER TABLE observability.alerts ADD COLUMN IF NOT EXISTS tenant_id LowCardinality(String) DEFAULT 'default' AFTER ts;
   ALTER TABLE observability.alerts ADD COLUMN IF NOT EXISTS kafka_partition UInt16 DEFAULT 0;
   ALTER TABLE observability.alerts ADD COLUMN IF NOT EXISTS kafka_offset UInt64 DEFAULT 0;
 "

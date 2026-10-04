@@ -152,6 +152,8 @@ for run in $(seq 1 "$RUNS"); do
             echo "The processor is stalled, down, or its ClickHouse circuit breaker is open." >&2
             echo "Container states:" >&2
             docker ps -a --format '  {{.Names}}: {{.Status}}' >&2 || true
+            echo "Last processor errors:" >&2
+            docker logs --tail 200 "${PROCESSOR_CONTAINER:-obs-processor}" 2>&1 | grep -E 'ERROR|WARN' | grep -v 'circuit open' | tail -4 | cut -c1-300 >&2 || true
             echo "ABORTED: run ${run}: ${landed} of ${sent} metrics landed. These figures measure the ingest path only." >> "$REPORT"
             echo "partial report: ${REPORT}" >&2
             exit 1

@@ -95,7 +95,7 @@ the script summed Kafka's LAG column, and Kafka prints `-` there for a
 partition that has never had an offset committed, which was counted as zero lag.
 Nothing in these reports shows that any of this data reached ClickHouse.
 
-## Processor stall under bulk load (found 2026-10-04, open)
+## Processor stall under bulk load (found and diagnosed 2026-10-04)
 
 After the 12,000 to 30,000/s runs:
 
@@ -109,10 +109,24 @@ After the 12,000 to 30,000/s runs:
   from the load runs. The dead-letter queue was empty.
 - The ingestor side was healthy: 14,757,800 messages published, 0 errors.
 
-The cause is not yet identified. The kill -9, replay and restart results above
-are unaffected: each verified rows in ClickHouse directly at about 1,000
-metrics/s. **No end-to-end throughput figure exists yet.** Under this load the
-processor did not keep up.
+**Cause.** The processor logged `circuit open after 5 attempts`, and ClickHouse's
+error table held 90 `NO_SUCH_COLUMN_IN_TABLE` errors: `No such column tenant_id
+in table observability.alerts`. The Docker volume was created before `tenant_id`
+existed, and the bootstrap upgrade script added that column to `metrics` but not
+to `alerts` (`CREATE TABLE IF NOT EXISTS` never repairs an old table). The load
+generator injects spikes, which fire alerts, so the first batch containing one
+could never be written or committed. The processor treats a missing column as
+retryable on purpose, so it paused and Kafka buffered everything. The chaos tests
+above never produced an alert, which is why they passed. A `CircuitBreakerOpen`
+alert exists in the Prometheus rules; nobody was looking at Alertmanager.
+
+Fixed in `infra/clickhouse/bootstrap.sh`, and `make integration-test` now checks
+that every column the processor writes exists in `metrics` and `alerts`.
+Recovery of the existing backlog after the fix has **not yet been confirmed**.
+
+The kill -9, replay and restart results above are unaffected: each verified rows
+in ClickHouse directly at about 1,000 metrics/s, with no alerts involved. **No
+end-to-end throughput figure exists yet.**
 
 The scripts are fixed: `kafka_lag` counts an uncommitted partition as fully
 unconsumed, and `make bench-median` now waits until every acknowledged metric

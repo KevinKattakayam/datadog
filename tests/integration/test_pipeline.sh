@@ -116,6 +116,28 @@ echo "$CH_TABLES" | grep -q "metrics_hourly" && pass "ClickHouse metrics_hourly 
 echo "$CH_TABLES" | grep -q "metrics_daily" && pass "ClickHouse metrics_daily MV exists" || fail "metrics_daily missing"
 echo "$CH_TABLES" | grep -q "alerts" && pass "ClickHouse alerts table exists" || fail "alerts table missing"
 
+# The processor inserts these exact columns. A table created by an older schema
+# and kept in a Docker volume can lack one; the processor then retries forever,
+# its circuit breaker opens, and consumption stops (a missing alerts.tenant_id
+# did exactly that). CREATE TABLE IF NOT EXISTS never repairs an old table, so
+# check the real thing.
+check_columns() {
+  local table="$1"; shift
+  local have want missing=""
+  have=$(curl -s -G "$CLICKHOUSE_URL/" \
+    --data-urlencode "query=SELECT name FROM system.columns WHERE database = 'observability' AND table = '${table}'" 2>/dev/null)
+  for want in "$@"; do
+    echo "$have" | grep -qx "$want" || missing="$missing $want"
+  done
+  if [ -z "$missing" ]; then
+    pass "observability.${table} has every column the processor writes"
+  else
+    fail "observability.${table} is missing columns:${missing}"
+  fi
+}
+check_columns metrics ts tenant_id name host value unit tags anomaly_score is_anomaly kafka_partition kafka_offset
+check_columns alerts ts tenant_id metric_name host value anomaly_score detector_type severity tags kafka_partition kafka_offset
+
 # ── Test 7: Prometheus Targets ─────────────────────────────────
 echo ""
 echo -e "${CYAN}▸ Test Group: Prometheus${RESET}"

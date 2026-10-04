@@ -2,6 +2,7 @@
 mod eval;
 pub mod ewma;
 pub mod registry;
+pub mod seasonal;
 pub mod zscore;
 
 use crate::model::{AlertSeverity, RawMetric};

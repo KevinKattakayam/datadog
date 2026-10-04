@@ -50,3 +50,6 @@ logs/
 tmp/
 temp/
 processor/target_local/
+
+# Downloaded benchmark data (AGPL-3.0; never committed)
+.nab/

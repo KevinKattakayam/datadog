@@ -68,7 +68,7 @@ a Service on Kubernetes and has not been tested. An earlier 20,000-metric
 ingestor run reported 0 retries because the old load loop sent in bursts and
 rarely had a request in flight during the gap; the loop is now evenly paced.
 
-## Ingest-path throughput (2026-10-04): end to end is NOT shown
+## Ingest-path throughput (2026-10-04, ingest path only)
 
 `RATE=<n> make bench-median`: 60-second runs, three per rate, batches of 100
 metrics. The ingestor answers 202 only after the Kafka write is acknowledged,
@@ -122,16 +122,63 @@ alert exists in the Prometheus rules; nobody was looking at Alertmanager.
 
 Fixed in `infra/clickhouse/bootstrap.sh`, and `make integration-test` now checks
 that every column the processor writes exists in `metrics` and `alerts`.
-Recovery of the existing backlog after the fix has **not yet been confirmed**.
+Recovery is **confirmed**: after adding the column to the running volume the circuit
+breaker closed within about a minute, `rows_committed_total` climbed, alerts were
+flushed, and the processor drained the roughly 19.5 million message backlog at
+about 3,775 rows per second (seven consecutive 10-second samples, 3,670 to 3,911).
 
 The kill -9, replay and restart results above are unaffected: each verified rows
-in ClickHouse directly at about 1,000 metrics/s, with no alerts involved. **No
-end-to-end throughput figure exists yet.**
+in ClickHouse directly at about 1,000 metrics/s, with no alerts involved. The
+end-to-end figures measured after the fix are in the next section.
 
 The scripts are fixed: `kafka_lag` counts an uncommitted partition as fully
 unconsumed, and `make bench-median` now waits until every acknowledged metric
 is queryable in ClickHouse and reports `landed%`. It aborts, naming the lag and
 the container states, if progress stops.
+
+## End-to-end throughput, rows verified in ClickHouse (2026-10-04)
+
+`RATE=<n> make bench-median` on a fresh stack (`docker compose down -v`, then
+`make dev`), commit `829a1ac`. After each 60-second run the script waits until
+every metric the ingestor acknowledged is queryable in ClickHouse. `landed%` is
+the share found; `drain` is how long after the load stopped until all of them
+were. Medians of three runs.
+
+| Requested | Ingest achieved | p50 | p95 | p99 | Errors | landed% | Drain (median; runs) | Report |
+|---|---|---|---|---|---|---|---|---|
+| 2,000/s | 2,000/s | 4.4 ms | 6.2 ms | 8.1 ms | 0 | 100 | 2 s (2, 2, 2) | [throughput-20261004-064703.txt](throughput-20261004-064703.txt) |
+| 4,000/s | 4,000/s | 4.3 ms | 6.0 ms | 7.7 ms | 0 | 100 | 8 s (8, 8, 10) | [throughput-20261004-065058.txt](throughput-20261004-065058.txt) |
+| 6,000/s | 6,000/s | 3.9 ms | 5.7 ms | 7.6 ms | 0 | 100 | 54 s (54, 42, 54) | [throughput-20261004-065514.txt](throughput-20261004-065514.txt) |
+
+Nothing was lost at any rate. Up to about 4,000 metrics/s the processor caught up
+within seconds of the load ending. At 6,000/s it fell behind: a 60-second run
+left a backlog that took 42 to 54 seconds to clear.
+
+**Estimated sustainable rate: roughly 3,200 to 3,500 rows/s on this machine.**
+This is an inference from the drain times (for example, at 6,000/s a backlog of
+about 360,000 messages cleared in 54 s implies about 3,150/s), not a direct
+measurement. It agrees with the 3,775 rows/s observed while draining the old
+backlog. Only 2,000/s is clearly sustainable from these runs; whether 3,000 to
+3,500/s holds over a longer run has not been tested. The ingest path, by
+contrast, accepted 30,000 metrics/s with no errors, so the processor is the
+limit, not the ingestor. The first run of each rate showed a latency spike
+(p99 about 370 ms), which looks like warm-up.
+
+Where the limit comes from is only partly understood. The processor waits for
+Kafka to confirm each alert before it handles the next message (a 20 ms producer
+batching window), and the load's alerts appeared about 21 ms apart in the log.
+Raising the anomaly threshold from 3.0 to 8.0, which fires far fewer alerts,
+raised the drain rate from about 3,775 to roughly 4,600 to 5,500 rows/s (one
+short, noisy sample, taken while ClickHouse was near its memory limit). Alert
+publishing is therefore a cost but not the only one.
+
+**ClickHouse ran out of memory.** While draining the roughly 19.5 million
+message backlog it reached 997 MiB of its 1 GiB limit and the kernel killed it
+(06:43:30). It survived the 2,000 to 6,000/s runs above. The limit has not been
+raised or tuned; treat 1 GiB as too small for sustained heavy inserts.
+
+All figures come from one 8-core laptop that also ran the load generator, with
+the whole stack on the same machine and little free memory.
 
 ## Kafka killed for memory under load (2026-10-04)
 

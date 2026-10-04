@@ -48,7 +48,7 @@ cluster and has not been re-run since this pass.
 |---|---|---|
 | Differentiating feature | Cardinality governor (report-only) | `docs/CARDINALITY_GOVERNOR.md` |
 | End-to-end freshness metric on dashboard | Done | `pipeline_end_to_end_lag_seconds`, Pipeline Overview "Freshness and Durability" |
-| Throughput, 3 runs, median | **Ingest path only** | 2,000 to 8,000 metrics/sec acknowledged by the ingestor with 0 errors (`bench/results/`). End to end is NOT shown: a bulk-load run stalled the processor on a missing `alerts.tenant_id` column in an old volume (fixed in the bootstrap script); not yet re-measured |
+| Throughput, 3 runs, median | **Done for this laptop** | `bench/results/throughput-20261004-0647*`, `-0650*`, `-0655*`: every acknowledged metric reached ClickHouse at 2,000, 4,000 and 6,000/s; drain after a 60 s run 2 s, 8 s and 54 s. Estimated sustainable end-to-end rate about 3,200 to 3,500 rows/s; the processor is the limit. Not tuned |
 | All chaos scenarios tabulated | **Done for the single-node stack** | kill -9, replay dedup, graceful processor and ingestor restart under load, in `bench/results/`. A multi-replica rolling update needs Kubernetes and is untested |
 
 ## Week 4 — Presentation
@@ -63,7 +63,7 @@ cluster and has not been re-run since this pass.
 
 ## Still open, in priority order
 
-1. Confirm the processor drains its backlog after the schema fix, then re-run `make bench-median`, which verifies rows landed in ClickHouse, to find the real end-to-end ceiling.
+1. Raise the end-to-end ceiling: publish alerts without waiting on each one, give ClickHouse more memory (it was killed at 1 GiB while draining a backlog), then re-run `make bench-median` at 3,000 to 8,000/s to find the new limit.
 2. Throughput benchmark (three runs, median, with `env.txt`).
 3. Compose ClickHouse `default` user: set a password, drop
    `CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT`, and update the scripts that query

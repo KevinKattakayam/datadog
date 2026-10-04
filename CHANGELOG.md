@@ -33,6 +33,10 @@
   0.65 and on level shifts from 0.35 to 0.90, with recall unchanged.
 
 ### Added
+- Measured end-to-end throughput with rows verified in ClickHouse: 2,000, 4,000
+  and 6,000 metrics/sec, no loss, processor limit estimated at about 3,200 to
+  3,500 rows/sec on one laptop (`bench/results/README.md`). ClickHouse was
+  OOM-killed at its 1 GiB limit while draining a large backlog; not yet tuned.
 - `processor/src/detector/seasonal.rs`: a per-time-of-day baseline, with an
   online measure of how seasonal a series is and an `auto` policy in the
   evaluation harness. Not wired into the processor. On real NYC-taxi data it

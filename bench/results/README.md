@@ -68,25 +68,56 @@ a Service on Kubernetes and has not been tested. An earlier 20,000-metric
 ingestor run reported 0 retries because the old load loop sent in bursts and
 rarely had a request in flight during the gap; the loop is now evenly paced.
 
-## Sustained ingest throughput (2026-10-04)
+## Ingest-path throughput (2026-10-04): end to end is NOT shown
 
 `RATE=<n> make bench-median`: 60-second runs, three per rate, batches of 100
-metrics, one request in flight per tick. Latency is per ingest request (HTTP
-202, which includes the Kafka acknowledgement). `drain_s` is how long the
-processor needed to clear the Kafka backlog after the run; 0 means it kept up.
+metrics. The ingestor answers 202 only after the Kafka write is acknowledged,
+and the load generator counts a request as a success only if every metric in it
+was acknowledged. So these figures describe the **ingest path** (HTTP to Kafka),
+not data reaching ClickHouse.
 
-| Requested | Achieved (median) | p50 | p95 | p99 | Errors | Drain | Report |
-|---|---|---|---|---|---|---|---|
-| 2,000/s | 2,000/s | 4.4 ms | 5.3 ms | 7.3 ms | 0 | 0 s | [throughput-20261004-011909.txt](throughput-20261004-011909.txt) |
-| 5,000/s | 5,000/s | 3.9 ms | 4.8 ms | 5.8 ms | 0 | 0 s | [throughput-20261004-012732.txt](throughput-20261004-012732.txt) |
-| 8,000/s | 7,999/s | 4.0 ms | 4.9 ms | 6.7 ms | 0 | 0 s | [throughput-20261004-014010.txt](throughput-20261004-014010.txt) |
+| Requested | Achieved (median) | p50 | p95 | p99 | Errors | Report |
+|---|---|---|---|---|---|---|
+| 2,000/s | 2,000/s | 4.4 ms | 5.3 ms | 7.3 ms | 0 | [throughput-20261004-011909.txt](throughput-20261004-011909.txt) |
+| 5,000/s | 5,000/s | 3.9 ms | 4.8 ms | 5.8 ms | 0 | [throughput-20261004-012732.txt](throughput-20261004-012732.txt) |
+| 8,000/s | 7,999/s | 4.0 ms | 4.9 ms | 6.7 ms | 0 | [throughput-20261004-014010.txt](throughput-20261004-014010.txt) |
 
-Host: 8-core i5-1135G7, 7.4 GiB RAM, with the whole stack **and** the load
-generator on the same machine and memory tight (swap in use). Latency did not
-change as the rate quadrupled, so these runs have not found the ceiling; they
-show the stack kept up at 8,000 metrics/s on this hardware, not that 8,000 is
-its limit. An attempted 20,000/s run is deliberately not recorded: Kafka had
-been killed for memory (below), so it measured a broken stack.
+Later runs at 12,000, 20,000 and 30,000/s also reported 0 errors. The ingestor's
+own counters afterwards showed 14,757,800 messages published to Kafka and no
+publish errors. Those reports are not recorded here. Host: 8-core i5-1135G7,
+7.4 GiB RAM, with the whole stack and the load generator on the same machine.
+The ingest-path ceiling has not been found.
+
+**Correction.** An earlier version of this page, and the repository README,
+said the processor "kept up" at these rates and showed a `Drain` column of 0 s.
+That was wrong. The `drain_s` column in the three reports above is **invalid**:
+the script summed Kafka's LAG column, and Kafka prints `-` there for a
+partition that has never had an offset committed, which was counted as zero lag.
+Nothing in these reports shows that any of this data reached ClickHouse.
+
+## Processor stall under bulk load (found 2026-10-04, open)
+
+After the 12,000 to 30,000/s runs:
+
+- Kafka `metrics.raw` held about 19.8 million messages in total, and five of
+  its six partitions had **no committed offset** (about 19.5 million messages
+  unconsumed).
+- The processor had consumed about 1,000 messages since it started,
+  `processor_rows_committed_total` was 0, and `processor_circuit_breaker_state`
+  was 1 (open).
+- ClickHouse held 326,254 rows in total, all from the correctness tests, none
+  from the load runs. The dead-letter queue was empty.
+- The ingestor side was healthy: 14,757,800 messages published, 0 errors.
+
+The cause is not yet identified. The kill -9, replay and restart results above
+are unaffected: each verified rows in ClickHouse directly at about 1,000
+metrics/s. **No end-to-end throughput figure exists yet.** Under this load the
+processor did not keep up.
+
+The scripts are fixed: `kafka_lag` counts an uncommitted partition as fully
+unconsumed, and `make bench-median` now waits until every acknowledged metric
+is queryable in ClickHouse and reports `landed%`. It aborts, naming the lag and
+the container states, if progress stops.
 
 ## Kafka killed for memory under load (2026-10-04)
 

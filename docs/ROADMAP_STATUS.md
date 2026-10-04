@@ -48,7 +48,7 @@ cluster and has not been re-run since this pass.
 |---|---|---|
 | Differentiating feature | Cardinality governor (report-only) | `docs/CARDINALITY_GOVERNOR.md` |
 | End-to-end freshness metric on dashboard | Done | `pipeline_end_to_end_lag_seconds`, Pipeline Overview "Freshness and Durability" |
-| k6 throughput, 3 runs, median | **Partly done** | `bench/results/throughput-*.txt`: 2,000, 5,000 and 8,000 metrics/sec, median of three 60 s runs, 0 errors, p99 under 8 ms; ceiling not yet found (`bench/results/README.md`) |
+| Throughput, 3 runs, median | **Ingest path only** | 2,000 to 8,000 metrics/sec acknowledged by the ingestor with 0 errors (`bench/results/`). End to end is NOT shown: under bulk load the processor stalled (circuit breaker open, nothing committed). Open |
 | All chaos scenarios tabulated | **Done for the single-node stack** | kill -9, replay dedup, graceful processor and ingestor restart under load, in `bench/results/`. A multi-replica rolling update needs Kubernetes and is untested |
 
 ## Week 4 — Presentation
@@ -63,7 +63,7 @@ cluster and has not been re-run since this pass.
 
 ## Still open, in priority order
 
-1. Find the throughput ceiling (raise `RATE` until errors, drain time or p99 change) and repeat the restart tests on Kubernetes with two or more replicas.
+1. Diagnose the processor stall under bulk load (circuit breaker opens, nothing is committed), then re-run `make bench-median`, which now verifies rows landed in ClickHouse, to find the real end-to-end ceiling.
 2. Throughput benchmark (three runs, median, with `env.txt`).
 3. Compose ClickHouse `default` user: set a password, drop
    `CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT`, and update the scripts that query

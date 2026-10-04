@@ -79,7 +79,9 @@ clickhouse_query() {
 }
 
 # Prints the consumer group's total lag. Fails LOUDLY if Kafka cannot be
-# queried: a silent exit here once hid a dead stack.
+# queried. A partition with no committed offset (shown as "-") has had NOTHING
+# consumed, so all of its messages count as lag: summing the LAG column alone
+# treats "-" as zero and reports a stalled consumer as fully drained.
 kafka_lag() {
     local out
     if ! out=$(docker exec "$KAFKA_CONTAINER" kafka-consumer-groups \
@@ -89,7 +91,18 @@ kafka_lag() {
         echo "the stack looks unhealthy; try: docker compose ps" >&2
         return 1
     fi
-    printf '%s\n' "$out" | awk 'NR>1 && $NF!="" {sum+=$6} END {print sum+0}'
+    if printf '%s' "$out" | grep -qi 'does not exist'; then
+        echo "consumer group ${CONSUMER_GROUP} does not exist: nothing has been consumed" >&2
+        return 1
+    fi
+    printf '%s\n' "$out" | awk '
+        $3 ~ /^[0-9]+$/ {
+            cur = $4; end = $5; lag = $6
+            if (end !~ /^[0-9]+$/)      { total += 1;   next }
+            if (cur !~ /^[0-9]+$/)      { total += end; next }
+            if (lag ~ /^[0-9]+$/)       { total += lag }
+        }
+        END { print total + 0 }'
 }
 
 # Sends numbered batches. A batch that is not answered 202 is retried until it

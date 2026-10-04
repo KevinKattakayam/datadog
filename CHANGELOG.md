@@ -3,6 +3,13 @@
 ## Unreleased
 
 ### Fixed
+- **Benchmarks reported a stalled processor as fully drained.** Kafka prints
+  `-` in the LAG column for a partition with no committed offset, and the
+  scripts summed that as zero. Such partitions now count as fully unconsumed,
+  and `make bench-median` verifies that every acknowledged metric reached
+  ClickHouse (`landed%`). **Retracted:** earlier README and `bench/results/`
+  text said the processor kept up at 2,000 to 8,000 metrics/sec; it was not
+  verified, and a later check showed the processor stalled under bulk load.
 - **The Kafka broker was OOM-killed under sustained load** in Compose: with no
   heap setting it ran a 1 GB heap inside a 1 GB container limit. The heap is
   pinned to 512 MB (`KAFKA_HEAP_OPTS`). The 60,000-metric restart test that

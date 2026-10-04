@@ -1,0 +1,31 @@
+# Throughput benchmark 20261004-065058
+# rate=4000/s  duration=60s  runs=3  batch=100  url=http://localhost:8080/ingest/batch
+
+## Host
+Linux 6.8.0-64-generic x86_64
+CPU(s):                               8
+Model name:                           11th Gen Intel(R) Core(TM) i5-1135G7 @ 2.40GHz
+               total        used        free      shared  buff/cache   available
+Mem:           7.4Gi       5.2Gi       230Mi       553Mi       2.7Gi       2.2Gi
+docker server=29.8.1
+commit=829a1ac
+
+## Runs
+run   metrics/sec    p50_ms    p95_ms    p99_ms  errors  landed%   drain_s
+1            4000       4.3       6.0       7.5       0    100.0         8
+2            4000       4.2       5.9       7.7       0    100.0         8
+3            3998       4.3       6.4      10.2       0    100.0        10
+
+## Median of 3 runs
+throughput_metrics_per_sec=4000.0  (requested 4000)
+latency_p50_ms=4.3
+latency_p95_ms=6.0
+latency_p99_ms=7.7
+drain_seconds=8.0
+min_throughput=3998  max_throughput=4000
+
+## Notes
+Latency is per ingest request (a batch of 100), measured by the load generator.
+landed% is the share of acknowledged metrics found in ClickHouse; drain_seconds is how long after the
+load stopped until all of them were queryable. Throughput and latency describe the ingest path.
+If throughput is well below the requested rate, the stack was saturated at this rate.

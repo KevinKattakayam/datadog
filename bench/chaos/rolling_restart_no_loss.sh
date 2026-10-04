@@ -192,6 +192,8 @@ while [ "$WAITED" -lt "$MAX_WAIT" ]; do
         echo "consumer lag stuck at ${LAG} for ${STALLED}s: the processor is not consuming" >&2
         echo "(down, or paused because ClickHouse is unavailable). Container states:" >&2
         docker ps -a --format '  {{.Names}}: {{.Status}}' >&2 || true
+        echo "Last processor errors:" >&2
+        docker logs --tail 200 "${PROCESSOR_CONTAINER:-obs-processor}" 2>&1 | grep -E 'ERROR|WARN' | grep -v 'circuit open' | tail -4 | cut -c1-300 >&2 || true
         exit 1
     fi
     sleep 5

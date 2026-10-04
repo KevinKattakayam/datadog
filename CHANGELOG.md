@@ -3,6 +3,13 @@
 ## Unreleased
 
 ### Fixed
+- **A pre-existing ClickHouse volume stalled the whole pipeline.** The bootstrap
+  upgrade added `tenant_id` to `metrics` but not to `alerts`, so any batch that
+  fired an alert failed with `NO_SUCH_COLUMN_IN_TABLE`, the circuit breaker
+  opened, and consumption stopped. The column is now added, and
+  `make integration-test` checks that every column the processor writes exists.
+  Benchmark and restart scripts also print the processor's last errors when they
+  abort.
 - **Benchmarks reported a stalled processor as fully drained.** Kafka prints
   `-` in the LAG column for a partition with no committed offset, and the
   scripts summed that as zero. Such partitions now count as fully unconsumed,
@@ -26,6 +33,10 @@
   0.65 and on level shifts from 0.35 to 0.90, with recall unchanged.
 
 ### Added
+- Measured end-to-end throughput with rows verified in ClickHouse: 2,000, 4,000
+  and 6,000 metrics/sec, no loss, processor limit estimated at about 3,200 to
+  3,500 rows/sec on one laptop (`bench/results/README.md`). ClickHouse was
+  OOM-killed at its 1 GiB limit while draining a large backlog; not yet tuned.
 - `processor/src/detector/seasonal.rs`: a per-time-of-day baseline, with an
   online measure of how seasonal a series is and an `auto` policy in the
   evaluation harness. Not wired into the processor. On real NYC-taxi data it

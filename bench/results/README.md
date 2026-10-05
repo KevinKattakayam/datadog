@@ -193,3 +193,22 @@ change the same 60,000-metric restart test that failed passed, and no further
 kills were logged. The benchmark and chaos scripts now also stop with a clear
 message when Kafka cannot be queried or the consumer lag is stuck, instead of
 exiting silently.
+
+## Follow-up: 3,000 and 3,500 metrics/sec
+
+Same host and method as above (8-core i5-1135G7 laptop, 7.4 GiB RAM, load generator on the same machine,
+three 60-second runs per report). Each rate was run twice: once on `829a1ac` and once on `2ac3040`
+(which adds the `alerts.tenant_id` upgrade fix). All four reports are kept.
+
+| Rate | Report | Commit | Median drain | Drain per run | Ingest p99 per run |
+| --- | --- | --- | --- | --- | --- |
+| 3,000/s | `throughput-20261004-070302.txt` | `829a1ac` | 2 s | 2, 2, 2 s | 8.1, 7.9, 7.8 ms |
+| 3,500/s | `throughput-20261004-070655.txt` | `829a1ac` | 14 s | 20, 14, 4 s | 110.7, 36.8, 7.5 ms |
+| 3,000/s | `throughput-20261004-072323.txt` | `2ac3040` | 2 s | 2, 2, 2 s | 8.6, 7.6, 7.4 ms |
+| 3,500/s | `throughput-20261004-072716.txt` | `2ac3040` | 2 s | 2, 14, 2 s | 7.9, 427.2, 7.5 ms |
+
+Every acknowledged metric reached ClickHouse in all 12 runs, with 0 errors. 3,000/s was steady. At 3,500/s
+the processor sometimes fell 14 to 20 seconds behind and ingest p99 occasionally spiked, so that rate is at
+the edge on this machine. The laptop had only 240 to 420 MiB of free RAM during these runs; memory pressure
+is a possible cause of the variance but was not tested. `journalctl -k | grep -i 'killed process'` returned
+nothing after these runs. Runs longer than 60 seconds were not done.

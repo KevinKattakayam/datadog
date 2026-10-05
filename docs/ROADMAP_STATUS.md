@@ -48,7 +48,7 @@ cluster and has not been re-run since this pass.
 |---|---|---|
 | Differentiating feature | Cardinality governor (report-only) | `docs/CARDINALITY_GOVERNOR.md` |
 | End-to-end freshness metric on dashboard | Done | `pipeline_end_to_end_lag_seconds`, Pipeline Overview "Freshness and Durability" |
-| Throughput, 3 runs, median | **Done for this laptop** | `bench/results/throughput-20261004-0647*`, `-0650*`, `-0655*`: every acknowledged metric reached ClickHouse at 2,000, 4,000 and 6,000/s; drain after a 60 s run 2 s, 8 s and 54 s. Estimated sustainable end-to-end rate about 3,200 to 3,500 rows/s; the processor is the limit. Not tuned |
+| Throughput, 3 runs, median | **Done for this laptop** | `bench/results/throughput-20261004-0647*`, `-0650*`, `-0655*`: every acknowledged metric reached ClickHouse at 2,000, 4,000 and 6,000/s; drain after a 60 s run 2 s, 8 s and 54 s. Follow-up runs in `-0703*`, `-0706*`, `-0723*`, `-0727*`: 3,000/s drained in 2 s every time; 3,500/s drained in 2 to 20 s across two repeats, with ingest p99 spikes up to 427 ms in one run. Estimated sustainable end-to-end rate about 3,200 to 3,500 rows/s; the processor is the limit. Not tuned |
 | All chaos scenarios tabulated | **Done for the single-node stack** | kill -9, replay dedup, graceful processor and ingestor restart under load, in `bench/results/`. A multi-replica rolling update needs Kubernetes and is untested |
 
 ## Week 4 — Presentation
@@ -64,9 +64,8 @@ cluster and has not been re-run since this pass.
 ## Still open, in priority order
 
 1. Raise the end-to-end ceiling: publish alerts without waiting on each one, give ClickHouse more memory (it was killed at 1 GiB while draining a backlog), then re-run `make bench-median` at 3,000 to 8,000/s to find the new limit.
-2. Throughput benchmark (three runs, median, with `env.txt`).
-3. Compose ClickHouse `default` user: set a password, drop
+2. Compose ClickHouse `default` user: set a password, drop
    `CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT`, and update the scripts that query
    ClickHouse with `curl` to authenticate.
-4. TLS and SASL for Kafka and ClickHouse in the chart.
-5. Detector quality: measured on synthetic series and on real labelled data (NAB), see `docs/DETECTOR_EVALUATION.md`. On real data the shipped threshold is noisy (precision about 0.10). A daily seasonal baseline exists (`seasonal.rs`) and is measured, but is not wired into the processor: it needs an opt-in configuration, incident grouping, and a better-grounded strength cut-off.
+3. TLS and SASL for Kafka and ClickHouse in the chart.
+4. Detector quality: measured on synthetic series and on real labelled data (NAB), see `docs/DETECTOR_EVALUATION.md`. On real data the shipped threshold is noisy (precision about 0.10). A daily seasonal baseline exists (`seasonal.rs`) and is measured, but is not wired into the processor: it needs an opt-in configuration, incident grouping, and a better-grounded strength cut-off.
